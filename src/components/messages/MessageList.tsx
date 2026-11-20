@@ -11,9 +11,9 @@ import type { Session } from '../../services/chat/types.js'
 import { closeSearchPanel } from '../search/searchPanelState.js'
 import { clearSearchScrollTarget, useSessionSearch } from '../sider/sessionSearchState.js'
 import { AssistantMessage } from './AssistantMessage.js'
-import { ScrollToBottomContext } from './scrollContext.js'
 import { UserMessage } from './UserMessage.js'
 import type { Message } from '../../services/chat/types.js'
+import styles from './MessageList.module.css'
 
 /**
  * 会话共用可重试的附件上传失败入口，覆盖当前提问与历史消息中的附件。
@@ -29,11 +29,12 @@ const getUploadRetryId = (messages: Message[], streaming: boolean) => {
     ? last.id
     : null
 }
-import styles from './MessageList.module.css'
 
 /** 距底部小于该值时视为在底部，流式内容增长时跟随 */
 const STICKY_THRESHOLD = 40
+const ANSWER_TOP_INSET = 16
 const EMPTY_VERSIONS: MessageVersions = { ids: [], index: -1 }
+type ScrollMode = 'bottom' | 'answer' | 'manual'
 
 export const MessageList = ({
   session,
@@ -50,7 +51,7 @@ export const MessageList = ({
   const answerStartRef = useRef<HTMLDivElement>(null)
   const previousAnswerRef = useRef<HTMLDivElement | null>(null)
   const previousStreamingId = useRef<string>()
-  const stickyRef = useRef(true)
+  const scrollModeRef = useRef<ScrollMode>('bottom')
   const scrollTopRef = useRef(0)
   const restoreScrollRef = useRef<{ messageId: string; top: number } | null>(null)
   const targetScroll = useSessionSearch((state) => state.targetScroll)
@@ -67,26 +68,56 @@ export const MessageList = ({
     setPreviousVersions(versions)
   }
   const lastMessageId = messages.at(-1)?.id
-  const scrollToBottom = useCallback(() => {
-    const el = scrollRef.current
-    if (el && stickyRef.current) {
-      el.scrollTop = el.scrollHeight
-      scrollTopRef.current = el.scrollTop
+
+  const setScrollMode = useCallback((mode: ScrollMode) => {
+    scrollModeRef.current = mode
+    if (scrollRef.current) {
+      // 定位正文时由消息列表维护锚点，避免浏览器跟随其他可见节点。
+      scrollRef.current.style.overflowAnchor = mode === 'answer' ? 'none' : ''
     }
   }, [])
 
-  // 内容、键盘和输入框高度变化时，继续遵循当前跟随状态。
-  useLayoutEffect(() => {
-    const content = contentRef.current
+  const trackScroll = useCallback(
+    (scroll: HTMLDivElement) => {
+      const top = scroll.scrollTop
+      const maxTop = Math.max(0, scroll.scrollHeight - scroll.clientHeight)
+      // 内容变短或视口变高时，浏览器会把滚动位置限制在新的范围内。
+      const previousTop = Math.min(scrollTopRef.current, maxTop)
+      scrollTopRef.current = top
+      if (Math.abs(top - previousTop) <= 1) {
+        return
+      }
+      const nearBottom = maxTop - top < STICKY_THRESHOLD
+      if (nearBottom && top > previousTop) {
+        setScrollMode('bottom')
+      } else if (scrollModeRef.current === 'answer' || (!nearBottom && top < previousTop)) {
+        setScrollMode('manual')
+      }
+    },
+    [setScrollMode]
+  )
+
+  const syncScroll = useCallback(() => {
     const scroll = scrollRef.current
-    if (!content || !scroll) {
+    if (!scroll || scrollModeRef.current === 'manual') {
       return
     }
-    const observer = new ResizeObserver(scrollToBottom)
-    observer.observe(content)
-    observer.observe(scroll)
-    return () => observer.disconnect()
-  }, [isMobile, scrollToBottom])
+    if (scrollModeRef.current === 'answer') {
+      const answer = answerStartRef.current
+      if (!answer) {
+        return
+      }
+      trackScroll(scroll)
+      if (scrollModeRef.current !== 'answer') {
+        return
+      }
+      scroll.scrollTop +=
+        answer.getBoundingClientRect().top - scroll.getBoundingClientRect().top - ANSWER_TOP_INSET
+    } else {
+      scroll.scrollTop = scroll.scrollHeight
+    }
+    scrollTopRef.current = scroll.scrollTop
+  }, [trackScroll])
 
   // 切换版本后将选择器留在原位置，避免回答长短变化导致操作区跳出视口。
   useLayoutEffect(() => {
@@ -98,17 +129,13 @@ export const MessageList = ({
       )
       if (switcher) {
         scroll.scrollTop += switcher.getBoundingClientRect().top - anchor.top
+        scrollTopRef.current = scroll.scrollTop
       }
       restoreScrollRef.current = null
       return
     }
-    if (targetScroll?.sessionId === session.id) {
-      stickyRef.current = false
-      return
-    }
-    stickyRef.current = true
-    scrollToBottom()
-  }, [session.id, lastMessageId, scrollToBottom, targetScroll])
+    setScrollMode('bottom')
+  }, [session.id, lastMessageId, setScrollMode])
 
   useEffect(() => {
     if (!targetScroll || targetScroll.sessionId !== session.id) {
@@ -124,7 +151,7 @@ export const MessageList = ({
     if (!targetEl) {
       return
     }
-    stickyRef.current = false
+    setScrollMode('manual')
     const scrollRect = scroll.getBoundingClientRect()
     const targetRect = targetEl.getBoundingClientRect()
     const nextTop =
@@ -139,7 +166,7 @@ export const MessageList = ({
       setHighlightedId((current) => (current === targetScroll.messageId ? null : current))
     }, 1800)
     return () => window.clearTimeout(timer)
-  }, [session.id, messages, targetScroll])
+  }, [session.id, messages, targetScroll, setScrollMode])
 
   useEffect(closeSearchPanel, [session.id, lastMessageId])
 
@@ -149,39 +176,44 @@ export const MessageList = ({
         return
       }
       restoreScrollRef.current = { messageId, top: anchorTop }
-      stickyRef.current = false
+      setScrollMode('manual')
       closeSearchPanel()
       selectMessageVersion(session.id, messageId)
     },
-    [session.id, streaming]
+    [session.id, streaming, setScrollMode]
   )
 
-  // 跨移动端断点时切换滚动层，并保持输入框及当前阅读位置。
+  const releaseAnswerAnchor = useCallback(() => {
+    if (scrollModeRef.current === 'answer') {
+      setScrollMode('manual')
+    }
+  }, [setScrollMode])
+
+  // 内容、键盘和视口变化时同步位置，跨移动端断点时切换滚动层。
   useLayoutEffect(() => {
-    const el = scrollRef.current
-    if (!el) {
+    const scroll = scrollRef.current
+    const content = contentRef.current
+    if (!scroll || !content) {
       return
     }
-    if (stickyRef.current) {
-      scrollToBottom()
-    } else {
-      el.scrollTop = scrollTopRef.current
+    setScrollMode(scrollModeRef.current)
+    if (scrollModeRef.current === 'manual') {
+      scroll.scrollTop = scrollTopRef.current
     }
-    const onScroll = () => {
-      const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < STICKY_THRESHOLD
-      // 仅在用户向上滚动时停止跟随底部，布局或内容增高时保持跟随状态。
-      if (nearBottom && el.scrollTop > scrollTopRef.current) {
-        stickyRef.current = true
-      } else if (!nearBottom && el.scrollTop < scrollTopRef.current) {
-        stickyRef.current = false
-      }
-      scrollTopRef.current = el.scrollTop
+    scrollTopRef.current = scroll.scrollTop
+    const onScroll = () => trackScroll(scroll)
+    scroll.addEventListener('scroll', onScroll, { passive: true })
+    const observer = new ResizeObserver(syncScroll)
+    observer.observe(content)
+    observer.observe(scroll)
+    return () => {
+      observer.disconnect()
+      scroll.removeEventListener('scroll', onScroll)
+      scroll.style.removeProperty('overflow-anchor')
     }
-    el.addEventListener('scroll', onScroll, { passive: true })
-    return () => el.removeEventListener('scroll', onScroll)
-  }, [isMobile, scrollToBottom])
+  }, [isMobile, setScrollMode, syncScroll, trackScroll])
 
-  // 仅在流式思考转入正文时定位一次，之后可以按自己的速度阅读。
+  // 正文首段较短时滚动范围可能不足，之后随内容增长重新对齐开头。
   useLayoutEffect(() => {
     const scroll = scrollRef.current
     const answer = answerStartRef.current
@@ -190,57 +222,66 @@ export const MessageList = ({
       lastMessageId !== undefined && lastMessageId === previousStreamingId.current
     previousAnswerRef.current = answer
     previousStreamingId.current = streaming ? lastMessageId : undefined
-    if (!scroll || !answer || !firstAnswer || !(streaming || wasStreaming) || !stickyRef.current) {
+    if (!scroll) {
       return
     }
-
-    stickyRef.current = false
-    scroll.scrollTop += answer.getBoundingClientRect().top - scroll.getBoundingClientRect().top - 16
-    scrollTopRef.current = scroll.scrollTop
-  }, [session, lastMessageId, streaming])
+    if (targetScroll?.sessionId === session.id) {
+      setScrollMode('manual')
+      return
+    }
+    if (
+      answer &&
+      firstAnswer &&
+      (streaming || wasStreaming) &&
+      scrollModeRef.current === 'bottom'
+    ) {
+      setScrollMode('answer')
+      scrollTopRef.current = scroll.scrollTop
+    }
+    syncScroll()
+  }, [isMobile, session, lastMessageId, streaming, targetScroll, setScrollMode, syncScroll])
 
   const lastIndex = messages.length - 1
   const uploadRetryId = getUploadRetryId(messages, streaming)
   return (
-    <ScrollToBottomContext.Provider value={scrollToBottom}>
-      <div ref={isMobile ? undefined : scrollRef} className={styles.container}>
-        <div ref={isMobile ? scrollRef : undefined} className={styles.scroll}>
-          <div ref={contentRef} className={styles.column}>
-            {messages.map((message, index) => (
-              <div
-                key={message.id}
-                data-message-id={message.id}
-                className={clsx(highlightedId === message.id && styles.searchHighlight)}
-              >
-                {message.role === 'user' ? (
-                  <UserMessage
-                    sessionId={session.id}
-                    message={message}
-                    retryUploadId={uploadRetryId}
-                    isFirst={index === 0}
-                    isLast={index === lastIndex || index === lastIndex - 1}
-                    busy={streaming}
-                    versions={versions.get(message.id) ?? EMPTY_VERSIONS}
-                    onSelectVersion={selectVersion}
-                  />
-                ) : (
-                  <AssistantMessage
-                    sessionId={session.id}
-                    message={message}
-                    isLast={index === lastIndex}
-                    streaming={streaming && index === lastIndex}
-                    busy={streaming}
-                    versions={versions.get(message.id) ?? EMPTY_VERSIONS}
-                    onSelectVersion={selectVersion}
-                    answerStartRef={index === lastIndex ? answerStartRef : undefined}
-                  />
-                )}
-              </div>
-            ))}
-          </div>
+    <div ref={isMobile ? undefined : scrollRef} className={styles.container}>
+      <div ref={isMobile ? scrollRef : undefined} className={styles.scroll}>
+        <div ref={contentRef} className={styles.column}>
+          {messages.map((message, index) => (
+            <div
+              key={message.id}
+              data-message-id={message.id}
+              className={clsx(highlightedId === message.id && styles.searchHighlight)}
+            >
+              {message.role === 'user' ? (
+                <UserMessage
+                  sessionId={session.id}
+                  message={message}
+                  retryUploadId={uploadRetryId}
+                  isFirst={index === 0}
+                  isLast={index === lastIndex || index === lastIndex - 1}
+                  busy={streaming}
+                  versions={versions.get(message.id) ?? EMPTY_VERSIONS}
+                  onSelectVersion={selectVersion}
+                />
+              ) : (
+                <AssistantMessage
+                  sessionId={session.id}
+                  message={message}
+                  isLast={index === lastIndex}
+                  streaming={streaming && index === lastIndex}
+                  busy={streaming}
+                  versions={versions.get(message.id) ?? EMPTY_VERSIONS}
+                  onSelectVersion={selectVersion}
+                  answerStartRef={index === lastIndex ? answerStartRef : undefined}
+                  onToggleThinking={index === lastIndex ? releaseAnswerAnchor : undefined}
+                />
+              )}
+            </div>
+          ))}
         </div>
-        {footer}
       </div>
-    </ScrollToBottomContext.Provider>
+      {footer}
+    </div>
   )
 }

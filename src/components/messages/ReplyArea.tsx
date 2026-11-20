@@ -60,12 +60,14 @@ export const ReplyArea = memo(function ReplyArea({
   thinking,
   streaming,
   hasResponse,
+  onToggle,
 }: {
   message: AssistantMessage
   view: ReplyView
   thinking: boolean
   streaming: boolean
   hasResponse: boolean
+  onToggle?: () => void
 }) {
   useTranslate()
   const collapseThinking = useSettings((state) => state.collapseThinking)
@@ -124,7 +126,10 @@ export const ReplyArea = memo(function ReplyArea({
           type="button"
           className={styles.title}
           aria-expanded={open}
-          onClick={() => setDisclosure({ titleActive, collapseThinking, open: !open })}
+          onClick={() => {
+            onToggle?.()
+            setDisclosure({ titleActive, collapseThinking, open: !open })
+          }}
         >
           <span className={clsx(styles.titleIcon, stopped && styles.stoppedIcon)}>
             <IconThinkOutline16 />

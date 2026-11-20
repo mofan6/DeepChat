@@ -1,4 +1,4 @@
-import { createElement, memo, useLayoutEffect, useMemo, useRef, type ReactNode } from 'react'
+import { createElement, memo, useMemo, type ReactNode } from 'react'
 import clsx from 'clsx'
 import type {
   BlockContent,
@@ -214,24 +214,13 @@ const MarkdownBlockContentOrDefinitionContent = memo(
 
 export const MarkdownAstRenderer = memo(function MarkdownAstRenderer({
   ast,
-  onUpdate,
   className,
   loading = false,
 }: {
   ast: Root
   className?: string
   loading?: boolean
-  /**
-   * layoutEffect 之后触发 -> 进行页面滚动
-   */
-  onUpdate: () => void
 }) {
-  const onUpdateRef = useRef<() => void>(() => 0)
-  onUpdateRef.current = onUpdate
-  useLayoutEffect(() => {
-    onUpdateRef.current()
-  }, [ast.children])
-
   return useMemo(
     () => (
       <div className={clsx('ds-markdown', className)}>

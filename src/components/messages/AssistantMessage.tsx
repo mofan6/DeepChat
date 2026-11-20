@@ -52,6 +52,7 @@ export const AssistantMessage = memo(function AssistantMessage({
   versions,
   onSelectVersion,
   answerStartRef,
+  onToggleThinking,
 }: {
   sessionId: string
   message: AssistantMessageType
@@ -61,6 +62,7 @@ export const AssistantMessage = memo(function AssistantMessage({
   versions: MessageVersions
   onSelectVersion: SelectMessageVersion
   answerStartRef?: Ref<HTMLDivElement>
+  onToggleThinking?: () => void
 }) {
   const t = useTranslate()
   const isMobile = useIsMobile()
@@ -151,6 +153,7 @@ export const AssistantMessage = memo(function AssistantMessage({
           thinking={thinking}
           streaming={streaming}
           hasResponse={!!responseText}
+          onToggle={onToggleThinking}
         />
       )}
       {editing ? (
