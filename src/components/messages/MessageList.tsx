@@ -1,5 +1,13 @@
 import clsx from 'clsx'
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type RefObject,
+} from 'react'
 import { useIsMobile } from '../../app/viewport.js'
 import {
   buildMessageVersions,
@@ -33,16 +41,19 @@ const getUploadRetryId = (messages: Message[], streaming: boolean) => {
 /** 距底部小于该值时视为在底部，流式内容增长时跟随 */
 const STICKY_THRESHOLD = 40
 const ANSWER_TOP_INSET = 16
+const ANSWER_TRANSITION_MS = 330
 const EMPTY_VERSIONS: MessageVersions = { ids: [], index: -1 }
 type ScrollMode = 'bottom' | 'answer' | 'manual'
 
 export const MessageList = ({
   session,
   streaming,
+  footerRef,
   footer,
 }: {
   session: Session
   streaming: boolean
+  footerRef: RefObject<HTMLDivElement>
   footer: React.ReactNode
 }) => {
   const isMobile = useIsMobile()
@@ -53,6 +64,9 @@ export const MessageList = ({
   const previousStreamingId = useRef<string>()
   const scrollModeRef = useRef<ScrollMode>('bottom')
   const scrollTopRef = useRef(0)
+  const answerSpaceRef = useRef(0)
+  const answerTargetRef = useRef(0)
+  const answerFrameRef = useRef<number | null>(null)
   const restoreScrollRef = useRef<{ messageId: string; top: number } | null>(null)
   const targetScroll = useSessionSearch((state) => state.targetScroll)
   const [highlightedId, setHighlightedId] = useState<string | null>(null)
@@ -69,11 +83,31 @@ export const MessageList = ({
   }
   const lastMessageId = messages.at(-1)?.id
 
-  const setScrollMode = useCallback((mode: ScrollMode) => {
-    scrollModeRef.current = mode
-    if (scrollRef.current) {
-      // 定位正文时由消息列表维护锚点，避免浏览器跟随其他可见节点。
-      scrollRef.current.style.overflowAnchor = mode === 'answer' ? 'none' : ''
+  const cancelAnswerTransition = useCallback(() => {
+    if (answerFrameRef.current !== null) {
+      cancelAnimationFrame(answerFrameRef.current)
+      answerFrameRef.current = null
+    }
+  }, [])
+
+  const setScrollMode = useCallback(
+    (mode: ScrollMode) => {
+      scrollModeRef.current = mode
+      if (mode !== 'answer') {
+        cancelAnswerTransition()
+      }
+      if (scrollRef.current) {
+        // 定位正文时由消息列表维护锚点，避免浏览器跟随其他可见节点。
+        scrollRef.current.style.overflowAnchor = mode === 'answer' ? 'none' : ''
+      }
+    },
+    [cancelAnswerTransition]
+  )
+
+  const setAnswerSpace = useCallback((space: number) => {
+    if (space !== answerSpaceRef.current) {
+      answerSpaceRef.current = space
+      contentRef.current?.style.setProperty('--answer-scroll-space', `${space}px`)
     }
   }, [])
 
@@ -88,7 +122,7 @@ export const MessageList = ({
         return
       }
       const nearBottom = maxTop - top < STICKY_THRESHOLD
-      if (nearBottom && top > previousTop) {
+      if (nearBottom && top > previousTop && !answerStartRef.current) {
         setScrollMode('bottom')
       } else if (scrollModeRef.current === 'answer' || (!nearBottom && top < previousTop)) {
         setScrollMode('manual')
@@ -99,30 +133,76 @@ export const MessageList = ({
 
   const syncScroll = useCallback(() => {
     const scroll = scrollRef.current
-    if (!scroll || scrollModeRef.current === 'manual') {
+    const content = contentRef.current
+    if (!scroll || !content) {
       return
     }
-    if (scrollModeRef.current === 'answer') {
-      const answer = answerStartRef.current
-      if (!answer) {
-        return
-      }
-      trackScroll(scroll)
-      if (scrollModeRef.current !== 'answer') {
-        return
-      }
-      scroll.scrollTop +=
-        answer.getBoundingClientRect().top - scroll.getBoundingClientRect().top - ANSWER_TOP_INSET
-    } else {
+    if (scrollModeRef.current === 'bottom') {
       scroll.scrollTop = scroll.scrollHeight
+      scrollTopRef.current = scroll.scrollTop
+      return
+    }
+
+    if (scrollModeRef.current === 'answer') {
+      trackScroll(scroll)
+    }
+    const answer = answerStartRef.current
+    const anchorActive = scrollModeRef.current === 'answer' && answer !== null
+    if (!anchorActive && answerSpaceRef.current === 0) {
+      return
+    }
+
+    const viewportTop = scroll.getBoundingClientRect().top
+    const footerHeight = isMobile ? 0 : (footerRef.current?.offsetHeight ?? 0)
+    const naturalBottom =
+      content.getBoundingClientRect().bottom - answerSpaceRef.current + footerHeight
+    const naturalMaxTop = scroll.scrollTop + naturalBottom - viewportTop - scroll.clientHeight
+    const target = anchorActive
+      ? Math.max(
+          0,
+          scroll.scrollTop + answer.getBoundingClientRect().top - viewportTop - ANSWER_TOP_INSET
+        )
+      : scroll.scrollTop
+    const requiredSpace = target > 0 ? Math.max(0, Math.ceil(target - naturalMaxTop)) : 0
+
+    // 短回复也能到达顶部。手动滚动后只保留当前位置仍需要的空间。
+    setAnswerSpace(anchorActive ? requiredSpace : Math.min(requiredSpace, answerSpaceRef.current))
+    if (anchorActive) {
+      answerTargetRef.current = target
+      if (answerFrameRef.current === null) {
+        scroll.scrollTop = target
+      }
     }
     scrollTopRef.current = scroll.scrollTop
-  }, [trackScroll])
+  }, [footerRef, isMobile, setAnswerSpace, trackScroll])
+
+  const startAnswerTransition = useCallback(
+    (scroll: HTMLDivElement, from: number) => {
+      if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        return
+      }
+      const startedAt = performance.now()
+      const animate = (now: number) => {
+        trackScroll(scroll)
+        if (scrollModeRef.current !== 'answer') {
+          return
+        }
+        const progress = Math.min(1, Math.max(0, (now - startedAt) / ANSWER_TRANSITION_MS))
+        const eased = 1 - (1 - progress) ** 3
+        scroll.scrollTop = from + (answerTargetRef.current - from) * eased
+        scrollTopRef.current = scroll.scrollTop
+        answerFrameRef.current = progress < 1 ? requestAnimationFrame(animate) : null
+      }
+      answerFrameRef.current = requestAnimationFrame(animate)
+    },
+    [trackScroll]
+  )
 
   // 切换版本后将选择器留在原位置，避免回答长短变化导致操作区跳出视口。
   useLayoutEffect(() => {
     const anchor = restoreScrollRef.current
     const scroll = scrollRef.current
+    setAnswerSpace(0)
     if (anchor && scroll) {
       const switcher = scroll.querySelector<HTMLElement>(
         `[data-message-version="${CSS.escape(anchor.messageId)}"]`
@@ -135,7 +215,7 @@ export const MessageList = ({
       return
     }
     setScrollMode('bottom')
-  }, [session.id, lastMessageId, setScrollMode])
+  }, [session.id, lastMessageId, setAnswerSpace, setScrollMode])
 
   useEffect(() => {
     if (!targetScroll || targetScroll.sessionId !== session.id) {
@@ -201,23 +281,49 @@ export const MessageList = ({
       scroll.scrollTop = scrollTopRef.current
     }
     scrollTopRef.current = scroll.scrollTop
-    const onScroll = () => trackScroll(scroll)
+    const onScroll = () => {
+      trackScroll(scroll)
+      if (scrollModeRef.current === 'manual' && answerSpaceRef.current > 0) {
+        syncScroll()
+      }
+    }
+    const onWheel = (event: WheelEvent) => {
+      if (Math.abs(event.deltaY) > Math.abs(event.deltaX)) {
+        releaseAnswerAnchor()
+      }
+    }
     scroll.addEventListener('scroll', onScroll, { passive: true })
+    scroll.addEventListener('touchmove', releaseAnswerAnchor, { passive: true })
+    scroll.addEventListener('wheel', onWheel, { passive: true })
     const observer = new ResizeObserver(syncScroll)
     observer.observe(content)
     observer.observe(scroll)
+    if (!isMobile && footerRef.current) {
+      observer.observe(footerRef.current)
+    }
     return () => {
+      cancelAnswerTransition()
       observer.disconnect()
       scroll.removeEventListener('scroll', onScroll)
+      scroll.removeEventListener('touchmove', releaseAnswerAnchor)
+      scroll.removeEventListener('wheel', onWheel)
       scroll.style.removeProperty('overflow-anchor')
     }
-  }, [isMobile, setScrollMode, syncScroll, trackScroll])
+  }, [
+    isMobile,
+    footerRef,
+    cancelAnswerTransition,
+    releaseAnswerAnchor,
+    setScrollMode,
+    syncScroll,
+    trackScroll,
+  ])
 
-  // 正文首段较短时滚动范围可能不足，之后随内容增长重新对齐开头。
+  // 第一段正文出现时上移一次，后续分片沿用同一个锚点。
   useLayoutEffect(() => {
     const scroll = scrollRef.current
     const answer = answerStartRef.current
-    const firstAnswer = answer !== previousAnswerRef.current
+    const answerChanged = answer !== previousAnswerRef.current
     const wasStreaming =
       lastMessageId !== undefined && lastMessageId === previousStreamingId.current
     previousAnswerRef.current = answer
@@ -229,17 +335,43 @@ export const MessageList = ({
       setScrollMode('manual')
       return
     }
+    if (!answer && answerChanged && scrollModeRef.current === 'answer') {
+      // 工具调用可能把最初的正文重新归入思考过程。
+      setScrollMode(streaming ? 'bottom' : 'manual')
+      if (streaming) {
+        setAnswerSpace(0)
+      }
+    }
     if (
       answer &&
-      firstAnswer &&
+      answerChanged &&
       (streaming || wasStreaming) &&
       scrollModeRef.current === 'bottom'
     ) {
+      const from = scrollTopRef.current
       setScrollMode('answer')
       scrollTopRef.current = scroll.scrollTop
+      startAnswerTransition(scroll, from)
+      syncScroll()
+      if (answerFrameRef.current !== null) {
+        // 思考区折叠时滚动范围可能曾收缩，在补足空间后恢复动画起点。
+        scroll.scrollTop = from
+        scrollTopRef.current = scroll.scrollTop
+      }
+      return
     }
     syncScroll()
-  }, [isMobile, session, lastMessageId, streaming, targetScroll, setScrollMode, syncScroll])
+  }, [
+    isMobile,
+    session,
+    lastMessageId,
+    streaming,
+    targetScroll,
+    setAnswerSpace,
+    setScrollMode,
+    startAnswerTransition,
+    syncScroll,
+  ])
 
   const lastIndex = messages.length - 1
   const uploadRetryId = getUploadRetryId(messages, streaming)

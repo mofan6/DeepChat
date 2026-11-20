@@ -1,4 +1,5 @@
 import clsx from 'clsx'
+import { useRef } from 'react'
 import { useIsMobile } from '../../app/viewport.js'
 import { useTranslate } from '../../i18n/index.js'
 import type { Session } from '../../services/chat/types.js'
@@ -22,6 +23,7 @@ export const SessionView = ({
 }) => {
   const t = useTranslate()
   const isMobile = useIsMobile()
+  const footerRef = useRef<HTMLDivElement>(null)
   const title = session.title || t('untitledChat')
   return (
     <div className={styles.view}>
@@ -48,8 +50,9 @@ export const SessionView = ({
       <MessageList
         session={session}
         streaming={streaming}
+        footerRef={footerRef}
         footer={
-          <div className={styles.inputContainer}>
+          <div ref={footerRef} className={styles.inputContainer}>
             <ChatInput sessionId={session.id} />
             <div className={styles.caveat}>{t('contentCaveat')}</div>
           </div>

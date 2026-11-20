@@ -33,7 +33,7 @@
   width: calc(var(--message-list-max-width) - 2 * var(--message-list-padding-horizontal));
   max-width: calc(100% - 40px);
   margin: 0 auto;
-  padding-bottom: 24px;
+  padding-bottom: calc(24px + var(--answer-scroll-space, 0px));
 }
 
 .searchHighlight {

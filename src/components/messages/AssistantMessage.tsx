@@ -191,7 +191,7 @@ export const AssistantMessage = memo(function AssistantMessage({
       ) : (
         <>
           {answer ? (
-            <div ref={thinking ? answerStartRef : undefined}>
+            <div ref={answerStartRef}>
               <Markdown
                 className="ds-assistant-message-main-content"
                 content={answer.markdown}
