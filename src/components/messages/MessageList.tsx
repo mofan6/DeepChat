@@ -47,6 +47,9 @@ export const MessageList = ({
   const isMobile = useIsMobile()
   const scrollRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
+  const answerStartRef = useRef<HTMLDivElement>(null)
+  const previousAnswerRef = useRef<HTMLDivElement | null>(null)
+  const previousStreamingId = useRef<string>()
   const stickyRef = useRef(true)
   const scrollTopRef = useRef(0)
   const restoreScrollRef = useRef<{ messageId: string; top: number } | null>(null)
@@ -167,9 +170,9 @@ export const MessageList = ({
     const onScroll = () => {
       const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < STICKY_THRESHOLD
       // 仅在用户向上滚动时停止跟随底部，布局或内容增高时保持跟随状态。
-      if (nearBottom) {
+      if (nearBottom && el.scrollTop > scrollTopRef.current) {
         stickyRef.current = true
-      } else if (el.scrollTop < scrollTopRef.current) {
+      } else if (!nearBottom && el.scrollTop < scrollTopRef.current) {
         stickyRef.current = false
       }
       scrollTopRef.current = el.scrollTop
@@ -177,6 +180,24 @@ export const MessageList = ({
     el.addEventListener('scroll', onScroll, { passive: true })
     return () => el.removeEventListener('scroll', onScroll)
   }, [isMobile, scrollToBottom])
+
+  // 仅在流式思考转入正文时定位一次，之后可以按自己的速度阅读。
+  useLayoutEffect(() => {
+    const scroll = scrollRef.current
+    const answer = answerStartRef.current
+    const firstAnswer = answer !== previousAnswerRef.current
+    const wasStreaming =
+      lastMessageId !== undefined && lastMessageId === previousStreamingId.current
+    previousAnswerRef.current = answer
+    previousStreamingId.current = streaming ? lastMessageId : undefined
+    if (!scroll || !answer || !firstAnswer || !(streaming || wasStreaming) || !stickyRef.current) {
+      return
+    }
+
+    stickyRef.current = false
+    scroll.scrollTop += answer.getBoundingClientRect().top - scroll.getBoundingClientRect().top - 16
+    scrollTopRef.current = scroll.scrollTop
+  }, [session, lastMessageId, streaming])
 
   const lastIndex = messages.length - 1
   const uploadRetryId = getUploadRetryId(messages, streaming)
@@ -211,6 +232,7 @@ export const MessageList = ({
                     busy={streaming}
                     versions={versions.get(message.id) ?? EMPTY_VERSIONS}
                     onSelectVersion={selectVersion}
+                    answerStartRef={index === lastIndex ? answerStartRef : undefined}
                   />
                 )}
               </div>

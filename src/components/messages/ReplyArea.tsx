@@ -1,6 +1,6 @@
 import { useTranslate } from '../../i18n/index.js'
 import clsx from 'clsx'
-import { memo, useEffect, useState, type ReactNode } from 'react'
+import { memo, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import {
   IconBrowseOutline16,
   IconBrowseWarningOutline16,
@@ -57,52 +57,102 @@ const useTicker = (active: boolean, interval: number) => {
 export const ReplyArea = memo(function ReplyArea({
   message,
   view,
+  thinking,
   streaming,
   hasResponse,
 }: {
   message: AssistantMessage
   view: ReplyView
+  thinking: boolean
   streaming: boolean
   hasResponse: boolean
 }) {
   useTranslate()
   const collapseThinking = useSettings((state) => state.collapseThinking)
-  const [open, setOpen] = useState(() => !collapseThinking)
-  useEffect(() => {
-    setOpen(!collapseThinking)
-  }, [collapseThinking])
   const titleActive = streaming && !hasResponse
+  const [disclosure, setDisclosure] = useState({
+    titleActive,
+    collapseThinking,
+    open: null as boolean | null,
+  })
+  if (disclosure.titleActive !== titleActive || disclosure.collapseThinking !== collapseThinking) {
+    setDisclosure({ titleActive, collapseThinking, open: null })
+  }
+  const open = disclosure.open ?? (titleActive || !collapseThinking)
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const stepsRef = useRef<HTMLDivElement>(null)
+
+  useLayoutEffect(() => {
+    const scroll = scrollRef.current
+    const steps = stepsRef.current
+    if (!thinking || !open || !titleActive || !scroll || !steps) {
+      return
+    }
+
+    let following = true
+    let lastTop = scroll.scrollTop
+    const onScroll = () => {
+      if (scroll.scrollTop !== lastTop) {
+        following = scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop <= 24
+        lastTop = scroll.scrollTop
+      }
+    }
+    const observer = new ResizeObserver(() => {
+      if (following) {
+        scroll.scrollTop = scroll.scrollHeight
+        lastTop = scroll.scrollTop
+      }
+    })
+    observer.observe(steps)
+    scroll.addEventListener('scroll', onScroll, { passive: true })
+    return () => {
+      observer.disconnect()
+      scroll.removeEventListener('scroll', onScroll)
+    }
+  }, [open, thinking, titleActive])
+
   useTicker(titleActive, 1000)
-  if (view.steps.length === 0 && !(message.thinking && streaming)) {
+  if (view.steps.length === 0 && !(thinking && streaming)) {
     return null
   }
-  // 未记录请求开关时，按是否有思考内容显示标题。
-  const thinking = message.thinking ?? view.steps.some((step) => step.type === 'thinking')
   const title = thinking ? getAreaTitle(view, streaming, Date.now(), hasResponse) : null
   const stopped = !streaming && !hasResponse
   return (
     <div className={styles.area}>
       {title ? (
-        <div className={styles.title} onClick={() => setOpen((value) => !value)}>
+        <button
+          type="button"
+          className={styles.title}
+          aria-expanded={open}
+          onClick={() => setDisclosure({ titleActive, collapseThinking, open: !open })}
+        >
           <span className={clsx(styles.titleIcon, stopped && styles.stoppedIcon)}>
             <IconThinkOutline16 />
           </span>
           <span className={clsx(styles.titleText, titleActive && styles.shimmer)}>{title}</span>
           {open ? <IconChevronDownOutline14 /> : <IconChevronRightOutline14 />}
-        </div>
+        </button>
       ) : null}
       {open || !title ? (
-        <div className={styles.steps}>
-          {view.steps.map((step, index) => (
-            <StepItem
-              key={stepKey(step, index)}
-              step={step}
-              message={message}
-              sources={view.sources}
-              streaming={streaming}
-              isLast={index === view.steps.length - 1}
-            />
-          ))}
+        <div
+          ref={scrollRef}
+          className={thinking ? styles.thinkingScroll : undefined}
+          tabIndex={thinking ? 0 : undefined}
+          role={thinking ? 'region' : undefined}
+          aria-label={title ?? undefined}
+        >
+          <div ref={stepsRef}>
+            {view.steps.map((step, index) => (
+              <StepItem
+                key={stepKey(step, index)}
+                step={step}
+                message={message}
+                sources={view.sources}
+                streaming={streaming}
+                isLast={index === view.steps.length - 1}
+              />
+            ))}
+          </div>
         </div>
       ) : null}
     </div>

@@ -5,8 +5,6 @@ declare module '*.module.css' {
 
 declare module '*.css' {}
 
-/** 构建期应用版本号，来自 package.json */
-declare const __APP_VERSION__: string
 /** 公开 API 的地址，见 rspack.config.ts 的 createConfig */
 declare const __API_ORIGIN__: string
 /** 是否启用开发服务器同源代理 */

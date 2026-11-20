@@ -515,6 +515,11 @@
   &:hover {
     background-color: var(--dsw-alias-interactive-bg-hover);
   }
+
+  &[aria-pressed='true'] {
+    border-color: var(--dsw-alias-brand-primary);
+    color: var(--dsw-alias-brand-text);
+  }
 }
 
 @media not all and (min-width: 768px) {

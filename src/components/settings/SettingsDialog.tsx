@@ -22,7 +22,6 @@ import { useChatStore } from '../../services/chat/store.js'
 import { regionCodes, getRegionName, provinces } from '../../services/location.js'
 import {
   isChineseBrowser,
-  setAutoCheckUpdate,
   setAvatarDataUrl,
   setAvatarEnabled,
   setAvatarShape,
@@ -43,12 +42,6 @@ import {
   syncDailyTokenDate,
   useDailyTokenUsage,
 } from '../../services/tokenUsage.js'
-import {
-  checkForUpdates,
-  getCurrentAppVersion,
-  openUpdateModal,
-  useUpdater,
-} from '../../services/updater.js'
 import {
   translate,
   useTranslate,
@@ -145,7 +138,6 @@ const SettingsContent = () => {
               <CollapseThinkingSetting />
               <LocationSetting />
               <TokenLimitSetting />
-              <UpdateSetting />
             </>
           ) : section === 'model' ? (
             <ModelSettings apiKeyEditor={apiKeyEditor} isMobile={isMobile} />
@@ -327,62 +319,6 @@ const TokenLimitSetting = () => {
           </div>
         </div>
       ) : null}
-    </>
-  )
-}
-
-const UpdateSetting = () => {
-  const t = useTranslate()
-  const autoCheckUpdate = useSettings((state) => state.autoCheckUpdate)
-  const checking = useUpdater((state) => state.checking)
-  const latest = useUpdater((state) => state.latest)
-  const versionInfo = getCurrentAppVersion()
-
-  return (
-    <>
-      <SettingCell
-        label={t('updateSectionLabel')}
-        description={t('updateCurrentVersion', {
-          version: versionInfo.versionName,
-          platform: versionInfo.isAndroid ? 'Android' : 'Web',
-        })}
-        status={null}
-        action={
-          <div className={styles.fetchRow}>
-            {latest ? (
-              <Button variant="outlined" size="m" onClick={openUpdateModal}>
-                {t('updateViewAnnouncement')}
-              </Button>
-            ) : null}
-            <Button
-              variant="outlined"
-              size="m"
-              className={styles.cellButton}
-              disabled={checking}
-              onClick={() => void checkForUpdates({ manual: true })}
-            >
-              {t(checking ? 'updateCheckingButton' : 'updateCheckButton')}
-            </Button>
-          </div>
-        }
-      />
-      <SettingCell
-        label={t('updateAutoCheckLabel')}
-        description={t('updateAutoCheckDesc')}
-        status={null}
-        action={
-          <button
-            type="button"
-            role="switch"
-            aria-checked={autoCheckUpdate}
-            aria-label={t('updateAutoCheckLabel')}
-            className={styles.switch}
-            onClick={() => setAutoCheckUpdate(!autoCheckUpdate)}
-          >
-            <span className={styles.switchThumb} />
-          </button>
-        }
-      />
     </>
   )
 }

@@ -1,6 +1,6 @@
 import { useTranslate } from '../../i18n/index.js'
 import clsx from 'clsx'
-import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { memo, useEffect, useLayoutEffect, useRef, useState, type Ref } from 'react'
 import { useIsMobile } from '../../app/viewport.js'
 import {
   IconBranchOutline16,
@@ -51,6 +51,7 @@ export const AssistantMessage = memo(function AssistantMessage({
   busy,
   versions,
   onSelectVersion,
+  answerStartRef,
 }: {
   sessionId: string
   message: AssistantMessageType
@@ -59,6 +60,7 @@ export const AssistantMessage = memo(function AssistantMessage({
   busy: boolean
   versions: MessageVersions
   onSelectVersion: SelectMessageVersion
+  answerStartRef?: Ref<HTMLDivElement>
 }) {
   const t = useTranslate()
   const isMobile = useIsMobile()
@@ -75,6 +77,7 @@ export const AssistantMessage = memo(function AssistantMessage({
   // 默认安全拒绝时按协议丢弃思考与正文；开启 keepRefusedContent 后保留已下发内容。
   const refused = !keepRefusedContent && message.stopReason === 'refusal'
   const answer = refused ? null : view.answer
+  const thinking = Boolean(message.thinking) || view.steps.some((step) => step.type === 'thinking')
   const notice = streaming
     ? null
     : describeReply(message, { refusalMessage, hasVisibleAnswer: !!answer })
@@ -145,6 +148,7 @@ export const AssistantMessage = memo(function AssistantMessage({
         <ReplyArea
           message={message}
           view={view}
+          thinking={thinking}
           streaming={streaming}
           hasResponse={!!responseText}
         />
@@ -184,14 +188,16 @@ export const AssistantMessage = memo(function AssistantMessage({
       ) : (
         <>
           {answer ? (
-            <Markdown
-              className="ds-assistant-message-main-content"
-              content={answer.markdown}
-              loading={streaming}
-              cacheKey={message.id}
-              disableLink={false}
-              sources={view.sources}
-            />
+            <div ref={thinking ? answerStartRef : undefined}>
+              <Markdown
+                className="ds-assistant-message-main-content"
+                content={answer.markdown}
+                loading={streaming}
+                cacheKey={message.id}
+                disableLink={false}
+                sources={view.sources}
+              />
+            </div>
           ) : null}
           {generatedImages.length > 0 ? (
             <div className={styles.generatedImages}>

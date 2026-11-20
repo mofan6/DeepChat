@@ -193,28 +193,24 @@ export const MemorySettings = () => {
 
       {settings.crossChatMemory ? (
         <>
-          <div className={`${styles.cell} ${styles.row}`}>
-            <div className={styles.text}>
+          <div className={clsx(styles.cell, styles.field)}>
+            <div>
               <div className={styles.label}>{t('crossChatScopeLabel')}</div>
               <div className={styles.description}>{t('crossChatScopeDesc')}</div>
             </div>
             <div className={styles.presetRow}>
               <button
                 type="button"
-                className={clsx(
-                  styles.presetPill,
-                  settings.crossChatMemoryScope === 'all' && styles.presetPillActive
-                )}
+                className={styles.presetPill}
+                aria-pressed={settings.crossChatMemoryScope === 'all'}
                 onClick={() => setCrossChatMemoryScope('all')}
               >
                 {t('crossChatScopeAll')}
               </button>
               <button
                 type="button"
-                className={clsx(
-                  styles.presetPill,
-                  settings.crossChatMemoryScope === 'selected' && styles.presetPillActive
-                )}
+                className={styles.presetPill}
+                aria-pressed={settings.crossChatMemoryScope === 'selected'}
                 onClick={() => setCrossChatMemoryScope('selected')}
               >
                 {t('crossChatScopeSelected')}

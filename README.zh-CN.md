@@ -4,7 +4,7 @@
 
 基于 DeepSeek 开源对话前端扩展的多模型 AI 客户端（MIT 开源协议）。纯前端静态架构，支持直接连接 DeepSeek、OpenAI 兼容接口（Chat Completions / Responses）、本地部署模型（Ollama / LM Studio / vLLM / LocalAI），以及一键打包 Android APK。
 
-前往 [Releases](https://github.com/YanJiuWeiYuanHui/DeepChat/releases) 可直接下载最新 Android APK 安装包。
+前往 [上游 Releases](https://github.com/YanJiuWeiYuanHui/DeepChat/releases) 可直接下载最新 Android APK 安装包。
 
 ## 核心功能
 
@@ -15,7 +15,6 @@
 - **长期记忆与可控策略**：自动提取与手动编辑长期记忆、跨会话记忆召回上限可调、支持回复分支编辑与自定义用户输入关键词拒答。
 - **Token 用量统计与每日提醒**：单次对话下方显示 Token 消耗，支持设置每日最大 Token 上限并在达到阈值时弹窗提醒。
 - **历史记录导入导出**：兼容 DeepSeek 历史导出格式（`export_format_version: 3`）ZIP 归档。
-- **版本检查与更新公告**：应用内置 GitHub Releases 检查更新，展示每次发版的更新日志，用户可自主选择立即下载安装、保留当前版本或跳过该版本。
 
 ## 本地运行与部署
 
@@ -53,7 +52,7 @@ cd android && ./gradlew assembleRelease
 - `SIGNING_KEY_ALIAS`（可选，默认 `androiddebugkey`）
 - `SIGNING_KEY_PASS`（可选，默认 `android`）
 
-推送版本标签即可自动构建并发布到 Releases（附带更新公告）：
+推送版本标签即可自动构建并发布到 Releases：
 
 ```sh
 git tag v1.0.1

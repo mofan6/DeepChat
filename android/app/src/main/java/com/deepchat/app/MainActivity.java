@@ -4,14 +4,11 @@ import android.app.Activity;
 import android.content.ContentResolver;
 import android.content.ContentValues;
 import android.content.Intent;
-import android.content.pm.PackageInfo;
-import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.provider.MediaStore;
-import android.provider.Settings;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
@@ -19,7 +16,6 @@ import android.widget.Toast;
 import androidx.activity.OnBackPressedCallback;
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
-import androidx.core.content.FileProvider;
 import com.getcapacitor.BridgeActivity;
 import java.io.BufferedInputStream;
 import java.io.ByteArrayOutputStream;
@@ -64,12 +60,6 @@ public class MainActivity extends BridgeActivity {
     private volatile int proxyPort = -1;
     private ExecutorService proxyPool;
 
-    private volatile String updateStatus = "idle";
-    private volatile int updateProgress = 0;
-    private volatile long updateDownloaded = 0;
-    private volatile long updateTotal = 0;
-    private volatile String updateError = "";
-    private volatile File downloadedApkFile = null;
     private long lastBackPressAt = 0L;
     private volatile File pendingSaveFile = null;
     private volatile String pendingSaveFileName = "";
@@ -81,171 +71,6 @@ public class MainActivity extends BridgeActivity {
             return proxyPort > 0 ? "http://127.0.0.1:" + proxyPort : "";
         }
 
-        @JavascriptInterface
-        public String getAppInfo() {
-            try {
-                PackageInfo info = getPackageManager().getPackageInfo(getPackageName(), 0);
-                long versionCode = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P
-                    ? info.getLongVersionCode()
-                    : info.versionCode;
-                String versionName = info.versionName != null ? info.versionName : "1.0.0";
-                return "{\"isAndroid\":true,\"versionCode\":" + versionCode
-                    + ",\"versionName\":\"" + escapeJson(versionName) + "\"}";
-            } catch (Exception e) {
-                return "{\"isAndroid\":true,\"versionCode\":1,\"versionName\":\"1.0.0\"}";
-            }
-        }
-
-        @JavascriptInterface
-        public void downloadAndInstallApk(String apkUrl, String fileName) {
-            if ("downloading".equals(updateStatus)) {
-                return;
-            }
-            if (apkUrl == null || !(apkUrl.startsWith("https://") || apkUrl.startsWith("http://"))) {
-                updateStatus = "error";
-                updateError = "Invalid APK URL";
-                return;
-            }
-            updateStatus = "downloading";
-            updateProgress = 0;
-            updateDownloaded = 0;
-            updateTotal = 0;
-            updateError = "";
-            downloadedApkFile = null;
-
-            final String safeName = (fileName != null && !fileName.trim().isEmpty())
-                ? fileName.replaceAll("[^a-zA-Z0-9._-]", "_")
-                : "DeepChat-update.apk";
-
-            Thread downloadThread = new Thread(() -> {
-                HttpURLConnection conn = null;
-                try {
-                    File updateDir = new File(getCacheDir(), "updates");
-                    if (!updateDir.exists()) {
-                        updateDir.mkdirs();
-                    }
-                    File tempFile = new File(updateDir, safeName + ".part");
-                    File finalFile = new File(updateDir, safeName);
-
-                    URL currentUrl = new URL(apkUrl);
-                    int redirects = 0;
-                    while (true) {
-                        conn = (HttpURLConnection) currentUrl.openConnection();
-                        conn.setInstanceFollowRedirects(false);
-                        conn.setConnectTimeout(15000);
-                        conn.setReadTimeout(60000);
-                        conn.setRequestProperty("User-Agent", "DeepChat-Android");
-                        int code = conn.getResponseCode();
-                        if (code >= 300 && code < 400 && redirects < 8) {
-                            String loc = conn.getHeaderField("Location");
-                            conn.disconnect();
-                            if (loc == null || loc.isEmpty()) {
-                                throw new IOException("Redirect without location");
-                            }
-                            currentUrl = new URL(currentUrl, loc);
-                            redirects++;
-                            continue;
-                        }
-                        if (code < 200 || code >= 300) {
-                            throw new IOException("HTTP " + code);
-                        }
-                        break;
-                    }
-
-                    long total = conn.getContentLengthLong();
-                    updateTotal = Math.max(0, total);
-                    try (
-                        InputStream in = new BufferedInputStream(conn.getInputStream());
-                        FileOutputStream fileOut = new FileOutputStream(tempFile)
-                    ) {
-                        byte[] buf = new byte[16384];
-                        long downloaded = 0;
-                        int n;
-                        while ((n = in.read(buf)) != -1) {
-                            fileOut.write(buf, 0, n);
-                            downloaded += n;
-                            updateDownloaded = downloaded;
-                            if (total > 0) {
-                                updateProgress = (int) Math.min(100, (downloaded * 100L) / total);
-                            }
-                        }
-                        fileOut.flush();
-                    }
-                    if (finalFile.exists()) {
-                        finalFile.delete();
-                    }
-                    if (!tempFile.renameTo(finalFile)) {
-                        throw new IOException("Failed to prepare APK file");
-                    }
-                    downloadedApkFile = finalFile;
-                    updateProgress = 100;
-                    runOnUiThread(() -> triggerApkInstall(finalFile));
-                } catch (Exception e) {
-                    updateStatus = "error";
-                    updateError = e.getMessage() != null ? e.getMessage() : "Download failed";
-                } finally {
-                    if (conn != null) {
-                        conn.disconnect();
-                    }
-                }
-            }, "DeepChatApkDownloader");
-            downloadThread.setDaemon(true);
-            downloadThread.start();
-        }
-
-        @JavascriptInterface
-        public String getUpdateDownloadState() {
-            return "{\"status\":\"" + escapeJson(updateStatus) + "\""
-                + ",\"progress\":" + updateProgress
-                + ",\"downloaded\":" + updateDownloaded
-                + ",\"total\":" + updateTotal
-                + ",\"error\":\"" + escapeJson(updateError) + "\""
-                + ",\"hasDownloadedFile\":" + (downloadedApkFile != null && downloadedApkFile.exists())
-                + "}";
-        }
-
-        @JavascriptInterface
-        public void retryInstallDownloadedApk() {
-            final File file = downloadedApkFile;
-            if (file != null && file.exists()) {
-                runOnUiThread(() -> triggerApkInstall(file));
-            }
-        }
-    }
-
-    private void triggerApkInstall(File apkFile) {
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !getPackageManager().canRequestPackageInstalls()) {
-                updateStatus = "permission_required";
-                Intent permIntent = new Intent(
-                    Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
-                    Uri.parse("package:" + getPackageName())
-                );
-                permIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                startActivity(permIntent);
-                return;
-            }
-            Uri apkUri = FileProvider.getUriForFile(this, getPackageName() + ".fileprovider", apkFile);
-            Intent installIntent = new Intent(Intent.ACTION_VIEW);
-            installIntent.setDataAndType(apkUri, "application/vnd.android.package-archive");
-            installIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
-            updateStatus = "installing";
-            startActivity(installIntent);
-        } catch (Exception e) {
-            updateStatus = "error";
-            updateError = e.getMessage() != null ? e.getMessage() : "Install failed";
-        }
-    }
-
-    private static String escapeJson(String value) {
-        if (value == null) {
-            return "";
-        }
-        return value
-            .replace("\\", "\\\\")
-            .replace("\"", "\\\"")
-            .replace("\r", " ")
-            .replace("\n", " ");
     }
 
     @Override

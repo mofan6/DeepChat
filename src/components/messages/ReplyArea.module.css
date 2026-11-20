@@ -7,6 +7,9 @@
   align-items: center;
   height: 34px;
   margin-bottom: 2px;
+  padding: 0;
+  border: 0;
+  background: transparent;
   color: var(--dsw-alias-label-secondary);
   cursor: pointer;
   user-select: none;
@@ -15,6 +18,14 @@
   &:hover {
     color: var(--dsw-alias-label-primary);
   }
+}
+
+.thinkingScroll {
+  max-height: min(12rem, 28vh);
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  overflow-anchor: none;
+  scrollbar-color: var(--scroll-color) transparent;
 }
 
 .titleIcon {

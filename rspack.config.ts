@@ -303,7 +303,6 @@ export const createConfig = ({
       meta: { 'application-version': version },
     }),
     new rspack.DefinePlugin({
-      __APP_VERSION__: JSON.stringify(version),
       __API_ORIGIN__: JSON.stringify(apiOrigin),
       __DEV_PROXY__: JSON.stringify(dev),
     }),

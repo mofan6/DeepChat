@@ -4,7 +4,7 @@ English | [简体中文](README.zh-CN.md)
 
 An open-source (MIT) multi-model AI chat client extended from DeepSeek's static web chat project. Runs purely client-side with support for DeepSeek, OpenAI-compatible endpoints (`/chat/completions` & `/responses`), local deployments (Ollama / LM Studio / vLLM / LocalAI), and Android packaging via Capacitor.
 
-Download pre-built Android APKs from [Releases](https://github.com/YanJiuWeiYuanHui/DeepChat/releases).
+Download pre-built Android APKs from the [upstream releases](https://github.com/YanJiuWeiYuanHui/DeepChat/releases).
 
 ## Features
 
@@ -14,7 +14,6 @@ Download pre-built Android APKs from [Releases](https://github.com/YanJiuWeiYuan
 - **Long-Term Memory & Policies**: Auto-extracted and editable long-term saved memories, configurable cross-chat memory recall, assistant reply branching edits, and custom keyword refusal rules.
 - **Token Usage & Daily Threshold Alerts**: Displays per-turn token usage beneath assistant replies and tracks daily cumulative usage with a customizable threshold alert modal.
 - **Chat History Backup**: Full ZIP import/export compatible with DeepSeek `export_format_version: 3` archives.
-- **In-App Update Checker**: Checks GitHub Releases for new versions, renders the release changelog inside the app, and lets users choose to install, stay on their current version, or skip a release.
 
 ## Development & Hosting
 
