@@ -29,6 +29,8 @@
 }
 
 .status {
+  box-sizing: border-box;
+  height: 88px;
   padding: 3px 0 6px;
   color: var(--dsw-alias-label-secondary);
   font-size: 13px;

@@ -4,6 +4,7 @@ import { isAcceptedExt, MAX_COUNT, MAX_SIZE_MB } from '../../services/attachment
 import type { DraftAttachment } from '../../services/chat/drafts.js'
 import {
   getRecentPhotoId,
+  getRecentPhotoThumbnail,
   readRecentPhoto,
   recentPhotos,
   type RecentPhoto,
@@ -53,25 +54,30 @@ export const RecentPhotos = ({
 
   useEffect(() => {
     mounted.current = true
+    const listener = recentPhotos.addListener('resume', () => {
+      if (panelActive.current) {
+        void refresh()
+      } else {
+        setGallery(undefined)
+      }
+    })
+    void listener.catch(() => {})
     return () => {
       mounted.current = false
       readController.current?.abort()
+      void listener.then((subscription) => subscription.remove()).catch(() => {})
     }
-  }, [])
+  }, [refresh])
 
   useEffect(() => {
     if (!open) {
-      setGallery(undefined)
       return
     }
     panelActive.current = true
-    const listener = recentPhotos.addListener('resume', () => void refresh())
-    void listener.catch(() => {})
     void refresh()
     return () => {
       panelActive.current = false
       galleryRequest.current += 1
-      void listener.then((subscription) => subscription.remove()).catch(() => {})
     }
   }, [open, refresh])
 
@@ -130,11 +136,12 @@ export const RecentPhotos = ({
     }
   }
 
-  if (!open) {
+  if (!open && gallery === undefined) {
     return null
   }
 
   const access = gallery?.access
+  const disabledWhileHidden = disabled || !open
   const photos = gallery?.photos ?? []
   const selectedIds = new Map(attachments.map((item) => [getRecentPhotoId(item.file), item.id]))
   return (
@@ -142,7 +149,11 @@ export const RecentPhotos = ({
       <div className={styles.header}>
         <span>{t('recentPhotosTitle')}</span>
         {access === 'limited' || access === 'prompt' || access === 'settings' ? (
-          <button type="button" disabled={disabled || requestingAccess} onClick={changeAccess}>
+          <button
+            type="button"
+            disabled={disabledWhileHidden || requestingAccess}
+            onClick={changeAccess}
+          >
             {t(
               access === 'limited'
                 ? 'recentPhotosManage'
@@ -152,7 +163,7 @@ export const RecentPhotos = ({
             )}
           </button>
         ) : gallery === null ? (
-          <button type="button" disabled={disabled} onClick={refresh}>
+          <button type="button" disabled={disabledWhileHidden} onClick={refresh}>
             {t('recentPhotosRetry')}
           </button>
         ) : null}
@@ -163,11 +174,12 @@ export const RecentPhotos = ({
             const selected = selectedIds.get(photo.id)
             return (
               <PhotoTile
-                key={photo.id}
+                key={`${photo.id}:${photo.modifiedAt}`}
+                open={open}
                 photo={photo}
                 selected={Boolean(selected)}
                 pending={pendingPhoto === photo.id}
-                disabled={disabled || (pendingPhoto !== null && !selected)}
+                disabled={disabledWhileHidden || (pendingPhoto !== null && !selected)}
                 onClick={() => (selected ? onRemove(selected) : void addPhoto(photo))}
               />
             )
@@ -191,12 +203,14 @@ export const RecentPhotos = ({
 }
 
 const PhotoTile = ({
+  open,
   photo,
   selected,
   pending,
   disabled,
   onClick,
 }: {
+  open: boolean
   photo: RecentPhoto
   selected: boolean
   pending: boolean
@@ -208,7 +222,7 @@ const PhotoTile = ({
 
   useEffect(() => {
     const button = buttonRef.current
-    if (!button) {
+    if (!open || !button || thumbnail) {
       return
     }
     let active = true
@@ -218,9 +232,10 @@ const PhotoTile = ({
           return
         }
         observer.disconnect()
-        void recentPhotos
-          .thumbnail({ id: photo.id })
-          .then(({ dataUrl }) => {
+        const pixels = Math.ceil((button.clientWidth * window.devicePixelRatio * 1.25) / 32) * 32
+        const size = Math.max(256, Math.min(480, pixels))
+        void getRecentPhotoThumbnail(photo, size)
+          .then((dataUrl) => {
             if (active) {
               setThumbnail(dataUrl)
             }
@@ -234,7 +249,7 @@ const PhotoTile = ({
       active = false
       observer.disconnect()
     }
-  }, [photo.id])
+  }, [open, photo, thumbnail])
 
   return (
     <button
@@ -247,7 +262,11 @@ const PhotoTile = ({
       disabled={disabled}
       onClick={onClick}
     >
-      {thumbnail ? <img src={thumbnail} alt="" draggable={false} /> : <IconGalleryOutline22 />}
+      {thumbnail ? (
+        <img src={thumbnail} alt="" draggable={false} decoding="async" />
+      ) : (
+        <IconGalleryOutline22 />
+      )}
       <span className={styles.indicator} aria-hidden="true">
         {selected ? <IconCheckedOutline14 /> : null}
       </span>

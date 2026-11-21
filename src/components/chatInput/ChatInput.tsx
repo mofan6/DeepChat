@@ -59,6 +59,7 @@ import { DraftAttachments } from './DraftAttachments.js'
 import { RecentPhotos } from './RecentPhotos.js'
 import { ImageSizePicker } from '../messages/ImageSizePicker.js'
 import { useVoiceInput } from './useVoiceInput.js'
+import { useAttachmentTray } from './useAttachmentTray.js'
 import { Spectrum } from './Spectrum.js'
 import { useTranslate } from '../../i18n/index.js'
 import styles from './ChatInput.module.css'
@@ -89,7 +90,7 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
   const imageGenChannel = useSettings((state) => state.imageGenChannel)
   const imageGenReady = imageGenChannel.enabled && Boolean(imageGenChannel.model.trim())
   const hasImageAttachment = attachments.some((item) => item.isImage)
-  const [plusOpen, setPlusOpen] = useState(false)
+  const { open: plusOpen, openRef: plusOpenRef, setOpen: setPlusOpen, hostRef } = useAttachmentTray()
   const [pendingRecentPhoto, setPendingRecentPhoto] = useState<string | null>(null)
   const [effortMenuOpen, setEffortMenuOpen] = useState(false)
   const [holdCancelling, setHoldCancelling] = useState(false)
@@ -97,6 +98,7 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
   const galleryInputRef = useRef<HTMLInputElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const focusAfterTouchRef = useRef(false)
   const togglesRef = useRef<HTMLDivElement>(null)
   const thinkLongPressTimerRef = useRef<number | null>(null)
   const thinkLongPressTriggeredRef = useRef(false)
@@ -146,7 +148,7 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
       setPlusOpen(false)
       return true
     })
-  }, [plusOpen])
+  }, [plusOpen, setPlusOpen])
 
   const canAttach = () => {
     if (useChatStore.getState().importingHistory) {
@@ -409,10 +411,32 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
   }
   sendLatestRef.current = send
 
+  const enterEditor = (touch: boolean) => {
+    if (!plusOpenRef.current) {
+      return
+    }
+    voiceHoldCleanupRef.current?.()
+    setPlusOpen(false)
+    if (touch) {
+      focusAfterTouchRef.current = true
+    } else {
+      textareaRef.current?.focus({ preventScroll: true })
+    }
+  }
+
+  const focusAfterTouch = () => {
+    if (focusAfterTouchRef.current) {
+      focusAfterTouchRef.current = false
+      textareaRef.current?.focus({ preventScroll: true })
+    }
+  }
+
   // 长按输入框语音输入：仅在文本框未聚焦且为空时按住 340ms 开启录音，确保点开文本框或已有文字时长按复制/粘贴完全正常
   const startVoiceHold = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (
       event.button !== 0 ||
+      plusOpenRef.current ||
+      focusAfterTouchRef.current ||
       !voice.available ||
       voice.status !== 'idle' ||
       useChatStore.getState().importingHistory ||
@@ -541,7 +565,7 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
   }
 
   return (
-    <div className={styles.inputHost}>
+    <div ref={hostRef} className={styles.inputHost}>
       {recording ? (
         <div
           className={clsx(
@@ -575,6 +599,28 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
         <div
           ref={textareaWrapperRef}
           className={clsx(styles.textareaWrapper, recording && styles.voiceHoldCapturing)}
+          onPointerDownCapture={(event) => {
+            if (event.isPrimary && event.button === 0) {
+              enterEditor(event.pointerType === 'touch')
+            }
+          }}
+          onTouchStartCapture={(event) => {
+            if (event.touches.length === 1) {
+              enterEditor(true)
+            }
+          }}
+          onTouchEndCapture={focusAfterTouch}
+          onPointerUpCapture={(event) => {
+            if (event.pointerType === 'touch') {
+              focusAfterTouch()
+            }
+          }}
+          onTouchCancelCapture={() => {
+            focusAfterTouchRef.current = false
+          }}
+          onPointerCancelCapture={() => {
+            focusAfterTouchRef.current = false
+          }}
           onPointerDown={startVoiceHold}
           onContextMenu={(event) => {
             if (voiceHoldPendingRef.current || voiceHoldActiveRef.current || recording) {
@@ -784,10 +830,10 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
                 aria-expanded={plusOpen}
                 disabled={importingHistory}
                 onClick={() => {
-                  if (!plusOpen && showRecentPhotos) {
+                  if (!plusOpenRef.current && showRecentPhotos) {
                     textareaRef.current?.blur()
                   }
-                  setPlusOpen(!plusOpen)
+                  setPlusOpen(!plusOpenRef.current)
                 }}
               >
                 <span className={styles.plusIcon}>

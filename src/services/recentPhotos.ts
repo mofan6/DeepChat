@@ -6,6 +6,7 @@ export type RecentPhoto = {
   name: string
   mimeType: string
   size: number
+  modifiedAt: number
 }
 
 export type RecentPhotoGallery = {
@@ -17,7 +18,7 @@ interface RecentPhotosPlugin {
   listPhotos(): Promise<RecentPhotoGallery>
   requestAccess(): Promise<void>
   openSettings(): Promise<void>
-  thumbnail(options: { id: string }): Promise<{ dataUrl: string }>
+  thumbnail(options: { id: string; size: number }): Promise<{ dataUrl: string }>
   addListener(event: 'resume', listener: () => void): Promise<PluginListenerHandle>
 }
 
@@ -29,6 +30,32 @@ export const hasRecentPhotoLibrary = () =>
 // 附件保留原始 File，关联信息随草稿释放，不写入会话或发送给服务端。
 const sourcePhotos = new WeakMap<File, string>()
 export const getRecentPhotoId = (file: File) => sourcePhotos.get(file)
+
+const thumbnails = new Map<string, Promise<string>>()
+
+export const getRecentPhotoThumbnail = (photo: RecentPhoto, size: number): Promise<string> => {
+  const key = `${photo.uri}:${photo.modifiedAt}:${size}`
+  const cached = thumbnails.get(key)
+  if (cached) {
+    thumbnails.delete(key)
+    thumbnails.set(key, cached)
+    return cached
+  }
+  const request = recentPhotos.thumbnail({ id: photo.id, size }).then(({ dataUrl }) => dataUrl)
+  thumbnails.set(key, request)
+  if (thumbnails.size > 40) {
+    const oldest = thumbnails.keys().next()
+    if (!oldest.done) {
+      thumbnails.delete(oldest.value)
+    }
+  }
+  void request.catch(() => {
+    if (thumbnails.get(key) === request) {
+      thumbnails.delete(key)
+    }
+  })
+  return request
+}
 
 export const readRecentPhoto = async (photo: RecentPhoto, signal: AbortSignal): Promise<File> => {
   const response = await fetch(Capacitor.convertFileSrc(photo.uri), { signal, cache: 'no-store' })
