@@ -47,6 +47,7 @@ import {
 } from '../../services/chat/drafts.js'
 import { stopReadAloud } from '../../services/speech/readAloud.js'
 import { startVoiceCall } from '../../services/speech/voiceCall.js'
+import { hasRecentPhotoLibrary } from '../../services/recentPhotos.js'
 import { Tooltip } from '../base/Tooltip.js'
 import { useAnchoredPosition, useDismiss } from '../base/anchored.js'
 import { ensureApiKey, openSettings } from '../settings/settingsDialogState.js'
@@ -54,6 +55,7 @@ import { DragMask, useFileDrop } from './DragMask.js'
 import { showToast } from '../base/toastState.js'
 import { ACCEPT, useUploads } from '../../services/attachments.js'
 import { DraftAttachments } from './DraftAttachments.js'
+import { RecentPhotos } from './RecentPhotos.js'
 import { ImageSizePicker } from '../messages/ImageSizePicker.js'
 import { useVoiceInput } from './useVoiceInput.js'
 import { Spectrum } from './Spectrum.js'
@@ -80,6 +82,7 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
   const chatProtocol = useSettings((state) => state.chatProtocol)
   const importingHistory = useChatStore((state) => state.importingHistory)
   const isMobile = useIsMobile()
+  const showRecentPhotos = hasRecentPhotoLibrary()
   const search = useSettings((state) => state.search)
   const imageGen = useSettings((state) => state.imageGen)
   const imageGenChannel = useSettings((state) => state.imageGenChannel)
@@ -140,7 +143,10 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
     })
   }, [plusOpen])
 
-  const openPicker = (ref: RefObject<HTMLInputElement>) => {
+  const canAttach = () => {
+    if (useChatStore.getState().importingHistory) {
+      return false
+    }
     const {
       imageGen: isImageGen,
       imageGenChannel: imgChannel,
@@ -150,7 +156,11 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
       isImageGen &&
       imageGenReady &&
       Boolean(imgChannel.apiKey.trim() || imgChannel.customHeaders.trim() || customHeaders.trim())
-    if (hasCustomAuth || ensureApiKey()) {
+    return hasCustomAuth || ensureApiKey()
+  }
+
+  const openPicker = (ref: RefObject<HTMLInputElement>) => {
+    if (canAttach()) {
       ref.current?.click()
     }
   }
@@ -173,19 +183,7 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
   }, [t, thinking, activeEffort, imageGen])
 
   const acceptFiles = (files: File[]) => {
-    if (files.length === 0 || useChatStore.getState().importingHistory) {
-      return
-    }
-    const {
-      imageGen: isImageGen,
-      imageGenChannel: imgChannel,
-      customHeaders,
-    } = useSettings.getState()
-    const hasCustomAuth =
-      isImageGen &&
-      imageGenReady &&
-      Boolean(imgChannel.apiKey.trim() || imgChannel.customHeaders.trim() || customHeaders.trim())
-    if (!hasCustomAuth && !ensureApiKey()) {
+    if (files.length === 0 || !canAttach()) {
       return
     }
     const error = addDraftFiles(sessionId, files, useSettings.getState().apiKey ?? '')
@@ -638,7 +636,12 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
                 aria-label={t('chatInputMoreActions')}
                 aria-expanded={plusOpen}
                 disabled={importingHistory}
-                onClick={() => setPlusOpen((value) => !value)}
+                onClick={() => {
+                  if (!plusOpen && showRecentPhotos) {
+                    textareaRef.current?.blur()
+                  }
+                  setPlusOpen(!plusOpen)
+                }}
               >
                 <span className={styles.plusIcon}>
                   <IconPlusOutline18 />
@@ -730,6 +733,15 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
         aria-hidden={!plusOpen}
       >
         <div className={styles.moreTrayInner}>
+          {plusOpen && showRecentPhotos ? (
+            <RecentPhotos
+              attachments={attachments}
+              disabled={importingHistory}
+              canAttach={canAttach}
+              onAdd={acceptFiles}
+              onRemove={removeFile}
+            />
+          ) : null}
           <div className={styles.moreGrid}>
             <button
               type="button"

@@ -7,8 +7,8 @@ android {
         applicationId "com.deepchat.app"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode(project.hasProperty('deepchatVersionCode') ? project.property('deepchatVersionCode').toString().toInteger() : 5)
-        versionName(project.hasProperty('deepchatVersionName') ? project.property('deepchatVersionName').toString() : '1.1.1')
+        versionCode(project.hasProperty('deepchatVersionCode') ? project.property('deepchatVersionCode').toString().toInteger() : 6)
+        versionName(project.hasProperty('deepchatVersionName') ? project.property('deepchatVersionName').toString() : '1.2.0')
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
