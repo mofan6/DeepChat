@@ -90,6 +90,7 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
   const imageGenReady = imageGenChannel.enabled && Boolean(imageGenChannel.model.trim())
   const hasImageAttachment = attachments.some((item) => item.isImage)
   const [plusOpen, setPlusOpen] = useState(false)
+  const [pendingRecentPhoto, setPendingRecentPhoto] = useState<string | null>(null)
   const [effortMenuOpen, setEffortMenuOpen] = useState(false)
   const [holdCancelling, setHoldCancelling] = useState(false)
   const cameraInputRef = useRef<HTMLInputElement>(null)
@@ -338,12 +339,12 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
   })
 
   useEffect(() => {
-    if (!pendingVoiceAutoSendRef.current || voice.status !== 'idle') {
+    if (!pendingVoiceAutoSendRef.current || voice.status !== 'idle' || pendingRecentPhoto !== null) {
       return
     }
     pendingVoiceAutoSendRef.current = false
     sendLatestRef.current()
-  }, [voice.status, text, attachments])
+  }, [voice.status, text, attachments, pendingRecentPhoto])
 
   // 欢迎页导入后会话 ID 不变，不能依赖卸载取消语音；订阅开始事件也覆盖快速完成的导入。
   const cancelVoice = voice.cancel
@@ -362,13 +363,24 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
 
   // 排队、上传中或上传失败的附件都留在输入框，全部上传成功后才能发送
   const hasDraftContent = text.trim() !== '' || attachments.length > 0
-  const canSend = !importingHistory && !streaming && voice.status === 'idle' && draftReady
-  const showVoiceCall = !streaming && !hasDraftContent && voice.status === 'idle'
+  const canSend =
+    !importingHistory &&
+    !streaming &&
+    voice.status === 'idle' &&
+    pendingRecentPhoto === null &&
+    draftReady
+  const showVoiceCall =
+    !streaming && !hasDraftContent && voice.status === 'idle' && pendingRecentPhoto === null
   const canVoiceCall = !importingHistory && voice.available
 
   const send = () => {
     const prepared = prepareDraftMessage(getDraft(sessionId), useUploads.getState().tasks)
-    if (useChatStore.getState().importingHistory || voice.status !== 'idle' || !prepared) {
+    if (
+      useChatStore.getState().importingHistory ||
+      voice.status !== 'idle' ||
+      pendingRecentPhoto !== null ||
+      !prepared
+    ) {
       return
     }
     const {
@@ -554,6 +566,7 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
         )}
         onClick={(event) => {
           if (event.target === event.currentTarget) {
+            setPlusOpen(false)
             textareaRef.current?.focus({ preventScroll: true })
           }
         }}
@@ -590,6 +603,8 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
             disabled={importingHistory}
             value={text}
             onChange={(event) => setText(event.target.value)}
+            onFocus={() => setPlusOpen(false)}
+            onClick={() => setPlusOpen(false)}
             onMouseDown={(event) => {
               // 首次点击时手动聚焦，避免 Safari 把整个页面滚到输入框位置。
               if (
@@ -865,10 +880,13 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
         aria-hidden={!plusOpen}
       >
         <div className={styles.moreTrayInner}>
-          {plusOpen && showRecentPhotos ? (
+          {showRecentPhotos ? (
             <RecentPhotos
+              open={plusOpen}
               attachments={attachments}
               disabled={importingHistory}
+              pendingPhoto={pendingRecentPhoto}
+              onPendingPhotoChange={setPendingRecentPhoto}
               canAttach={canAttach}
               onAdd={acceptFiles}
               onRemove={removeFile}

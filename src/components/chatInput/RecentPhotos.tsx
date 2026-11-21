@@ -14,14 +14,20 @@ import { showToast } from '../base/toastState.js'
 import styles from './RecentPhotos.module.css'
 
 export const RecentPhotos = ({
+  open,
   attachments,
   disabled,
+  pendingPhoto,
+  onPendingPhotoChange,
   canAttach,
   onAdd,
   onRemove,
 }: {
+  open: boolean
   attachments: DraftAttachment[]
   disabled: boolean
+  pendingPhoto: string | null
+  onPendingPhotoChange: (id: string | null) => void
   canAttach: () => boolean
   onAdd: (files: File[]) => void
   onRemove: (id: string) => void
@@ -29,13 +35,13 @@ export const RecentPhotos = ({
   const t = useTranslate()
   const [gallery, setGallery] = useState<RecentPhotoGallery | null>()
   const [requestingAccess, setRequestingAccess] = useState(false)
-  const [pendingPhoto, setPendingPhoto] = useState<string | null>(null)
   const readController = useRef<AbortController | null>(null)
   const mounted = useRef(false)
+  const panelActive = useRef(false)
   const galleryRequest = useRef(0)
 
   const refresh = useCallback(async () => {
-    if (!mounted.current) {
+    if (!panelActive.current) {
       return
     }
     const request = ++galleryRequest.current
@@ -47,16 +53,27 @@ export const RecentPhotos = ({
 
   useEffect(() => {
     mounted.current = true
+    return () => {
+      mounted.current = false
+      readController.current?.abort()
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!open) {
+      setGallery(undefined)
+      return
+    }
+    panelActive.current = true
     const listener = recentPhotos.addListener('resume', () => void refresh())
     void listener.catch(() => {})
     void refresh()
     return () => {
-      mounted.current = false
+      panelActive.current = false
       galleryRequest.current += 1
-      readController.current?.abort()
       void listener.then((subscription) => subscription.remove()).catch(() => {})
     }
-  }, [refresh])
+  }, [open, refresh])
 
   const changeAccess = async () => {
     setRequestingAccess(true)
@@ -94,7 +111,7 @@ export const RecentPhotos = ({
     }
     const controller = new AbortController()
     readController.current = controller
-    setPendingPhoto(photo.id)
+    onPendingPhotoChange(photo.id)
     try {
       const file = await readRecentPhoto(photo, controller.signal)
       if (!controller.signal.aborted) {
@@ -108,9 +125,13 @@ export const RecentPhotos = ({
     } finally {
       readController.current = null
       if (mounted.current) {
-        setPendingPhoto(null)
+        onPendingPhotoChange(null)
       }
     }
+  }
+
+  if (!open) {
+    return null
   }
 
   const access = gallery?.access
