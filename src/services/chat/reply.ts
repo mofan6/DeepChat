@@ -384,25 +384,19 @@ export const toRequestMessagesWithSources = (
   sourceEntries: RequestMessageSource[]
   roundCount: number
 } => {
-  const messages: MessageParam[] = []
-  const sourceEntries: RequestMessageSource[] = []
-  let previousReminder: string | undefined
-  const appendReminder = (reminder: string | undefined) => {
-    // 仅在当前分支首次出现或内容变化时插入快照；缺少快照的消息保持原有内容。
-    if (reminder && reminder !== previousReminder) {
-      messages.push({ role: 'latest_reminder', content: reminder })
-      sourceEntries.push({ kind: 'reminder' })
-      previousReminder = reminder
-    }
-  }
-  const allRounds = getContextRounds(history, allowRefused).slice(
-    Math.max(0, options?.dropLeadingRounds ?? 0)
+  const allRounds = getContextRounds(history, allowRefused).filter(
+    ([user]) => !options?.skipRoundUserIds?.has(user.id)
   )
-  let roundCount = 0
+
+  type BuiltRound = {
+    reminder?: string
+    userParam: MessageParam
+    assistantParam: Extract<MessageParam, { role: 'assistant' }>
+    userSource: RequestMessageSource
+    assistantSource: RequestMessageSource
+  }
+  const builtRounds: BuiltRound[] = []
   for (const [user, reply] of allRounds) {
-    if (options?.skipRoundUserIds?.has(user.id)) {
-      continue
-    }
     const builtUser = toUserParam(user, useLocalFileId, options?.skipFileIds)
     // 历史提问没有文字也没有可用内容块时，连同回答一起省略。
     if (!builtUser.param.content) {
@@ -417,14 +411,38 @@ export const toRequestMessagesWithSources = (
     if (assistantParam.content.length === 0) {
       continue
     }
-    appendReminder(reply.latestReminder)
-    messages.push(builtUser.param, assistantParam)
-    sourceEntries.push(
-      { kind: 'historyUser', userMessageId: user.id, sentFiles: builtUser.sentFiles },
-      { kind: 'historyAssistant', userMessageId: user.id, assistantMessageId: reply.id }
-    )
-    roundCount += 1
+    builtRounds.push({
+      reminder: reply.latestReminder,
+      userParam: builtUser.param,
+      assistantParam,
+      userSource: { kind: 'historyUser', userMessageId: user.id, sentFiles: builtUser.sentFiles },
+      assistantSource: {
+        kind: 'historyAssistant',
+        userMessageId: user.id,
+        assistantMessageId: reply.id,
+      },
+    })
   }
+  const dropLeading = Math.max(0, options?.dropLeadingRounds ?? 0)
+  const selectedRounds = dropLeading > 0 ? builtRounds.slice(dropLeading) : builtRounds
+
+  const messages: MessageParam[] = []
+  const sourceEntries: RequestMessageSource[] = []
+  let previousReminder: string | undefined
+  const appendReminder = (reminder: string | undefined) => {
+    // 仅在当前分支首次出现或内容变化时插入快照；缺少快照的消息保持原有内容。
+    if (reminder && reminder !== previousReminder) {
+      messages.push({ role: 'latest_reminder', content: reminder })
+      sourceEntries.push({ kind: 'reminder' })
+      previousReminder = reminder
+    }
+  }
+  for (const round of selectedRounds) {
+    appendReminder(round.reminder)
+    messages.push(round.userParam, round.assistantParam)
+    sourceEntries.push(round.userSource, round.assistantSource)
+  }
+  const roundCount = selectedRounds.length
   appendReminder(latestReminder)
   messages.push(toUserParam(question, useLocalFileId).param)
   sourceEntries.push({ kind: 'currentQuestion' })

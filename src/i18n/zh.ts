@@ -403,6 +403,7 @@ export const zh = {
   avatarCropHint: '拖动图片调整位置，滑块缩放选区',
   avatarCropZoom: '缩放',
   avatarCropConfirm: '确认使用',
+  avatarCropLoadFailed: '图片加载失败，请重新选择图片',
   pinSession: '置顶会话',
   unpinSession: '取消置顶',
   sessionHistoryPinnedLabel: '置顶',
@@ -420,4 +421,14 @@ export const zh = {
   crossChatLinkedFilterPlaceholder: '按标题筛选会话…',
   crossChatLinkedClear: '清空已选',
   crossChatLinkedEmpty: '暂无可选会话',
+  loadEarlierMessages: '显示更早消息（还有 {count} 条）',
+  replyUserInputTooLong:
+    '单条提问或文档解析后的内容共 {actual} tokens，超过了接口单次输入上限 {limit} tokens，请缩短或分段发送',
+  replyUserInputTooLongGeneric:
+    '单条提问或文档解析后的内容超过了接口单次输入上限，请缩短或分段发送',
+  timelineNavLabel: '对话时间线导航',
+  timelineTurns: '{count} 轮',
+  timelineTurnIndex: '{current} / {total}',
+  timelineNoAnswer: '暂无回复',
+  timelineAttachmentOnly: '[附件消息]',
 } as const

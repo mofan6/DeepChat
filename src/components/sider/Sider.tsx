@@ -21,6 +21,8 @@ import { openSessionSearch } from './sessionSearchState.js'
 import { SessionItem } from './SessionItem.js'
 import styles from './Sider.module.css'
 
+const dayStart = (time: number) => new Date(time).setHours(0, 0, 0, 0)
+
 /** 展开的侧边栏：名称与收起按钮、开启新对话、全屏搜索入口、按时间分组的会话列表、底部设置；移动端放在抽屉里，收起按钮关闭抽屉 */
 export const Sider = ({ mobile = false }: { mobile?: boolean }) => {
   const t = useTranslate()
@@ -36,7 +38,7 @@ export const Sider = ({ mobile = false }: { mobile?: boolean }) => {
     const refresh = () => {
       clearTimeout(timer)
       const time = Date.now()
-      setNow(time)
+      setNow((prev) => (dayStart(prev) === dayStart(time) ? prev : time))
       const midnight = new Date(time).setHours(24, 0, 0, 0)
       timer = setTimeout(refresh, midnight - time)
     }
@@ -94,7 +96,7 @@ export const Sider = ({ mobile = false }: { mobile?: boolean }) => {
                   key={session.id}
                   session={session}
                   active={session.id === activeId}
-                  onDelete={() => setDeleting(session)}
+                  onDelete={setDeleting}
                 />
               ))}
             </div>

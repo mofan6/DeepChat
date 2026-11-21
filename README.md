@@ -37,7 +37,8 @@ pnpm preview
 
 ## Android APK & Automated Releases
 
-Build locally:
+For a local release build, set `DEEPCHAT_KEYSTORE_FILE`, `DEEPCHAT_KEYSTORE_PASS`,
+`DEEPCHAT_KEY_ALIAS` and `DEEPCHAT_KEY_PASS` for your signing keystore, then run:
 
 ```sh
 pnpm run android:sync

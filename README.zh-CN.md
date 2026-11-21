@@ -38,7 +38,8 @@ pnpm preview
 
 ## Android 打包与自动发布
 
-本地生成签名 Release APK：
+本地打包前，请为签名密钥设置 `DEEPCHAT_KEYSTORE_FILE`、`DEEPCHAT_KEYSTORE_PASS`、
+`DEEPCHAT_KEY_ALIAS` 和 `DEEPCHAT_KEY_PASS`，然后运行：
 
 ```sh
 pnpm run android:sync

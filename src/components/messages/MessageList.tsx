@@ -9,6 +9,7 @@ import {
   type RefObject,
 } from 'react'
 import { useIsMobile } from '../../app/viewport.js'
+import { useTranslate } from '../../i18n/index.js'
 import {
   buildMessageVersions,
   getVisibleMessages,
@@ -19,6 +20,7 @@ import type { Session } from '../../services/chat/types.js'
 import { closeSearchPanel } from '../search/searchPanelState.js'
 import { clearSearchScrollTarget, useSessionSearch } from '../sider/sessionSearchState.js'
 import { AssistantMessage } from './AssistantMessage.js'
+import { ConversationTimeline, extractTimelineTurns } from './ConversationTimeline.js'
 import { UserMessage } from './UserMessage.js'
 import type { Message } from '../../services/chat/types.js'
 import styles from './MessageList.module.css'
@@ -42,8 +44,15 @@ const getUploadRetryId = (messages: Message[], streaming: boolean) => {
 const STICKY_THRESHOLD = 40
 const ANSWER_TOP_INSET = 16
 const ANSWER_TRANSITION_MS = 330
+const JUMP_VIEWPORT_RATIO = 0.32
+/** 超长对话初始只挂载最近 N 条消息，避免全量 Markdown AST 解析与 DOM 挂载卡死主线程 */
+const INITIAL_VISIBLE_COUNT = 40
+const LOAD_MORE_STEP = 40
 const EMPTY_VERSIONS: MessageVersions = { ids: [], index: -1 }
 type ScrollMode = 'bottom' | 'answer' | 'manual'
+
+const findMessageElement = (scroll: HTMLDivElement, id: string) =>
+  scroll.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(id)}"]`)
 
 export const MessageList = ({
   session,
@@ -56,6 +65,7 @@ export const MessageList = ({
   footerRef: RefObject<HTMLDivElement>
   footer: React.ReactNode
 }) => {
+  const t = useTranslate()
   const isMobile = useIsMobile()
   const scrollRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
@@ -68,9 +78,49 @@ export const MessageList = ({
   const answerTargetRef = useRef(0)
   const answerFrameRef = useRef<number | null>(null)
   const restoreScrollRef = useRef<{ messageId: string; top: number } | null>(null)
+  const prependScrollRef = useRef<{ messageId: string; top: number } | null>(null)
   const targetScroll = useSessionSearch((state) => state.targetScroll)
+  const [localJump, setLocalJump] = useState<{ messageId: string; nonce: number } | null>(null)
+  const jumpNonceRef = useRef(0)
   const [highlightedId, setHighlightedId] = useState<string | null>(null)
-  const messages = getVisibleMessages(session)
+  const [activeTurnIndex, setActiveTurnIndex] = useState(0)
+  const timelineJumpRef = useRef(false)
+  const [windowState, setWindowState] = useState<{ sessionId: string; count: number }>(() => ({
+    sessionId: session.id,
+    count: INITIAL_VISIBLE_COUNT,
+  }))
+  const visibleCount =
+    windowState.sessionId === session.id ? windowState.count : INITIAL_VISIBLE_COUNT
+
+  const messages = useMemo(() => getVisibleMessages(session), [session])
+  const attachmentOnlyLabel = t('timelineAttachmentOnly')
+  const noAnswerLabel = t('timelineNoAnswer')
+  const timelineTurns = useMemo(
+    () => extractTimelineTurns(messages, attachmentOnlyLabel, noAnswerLabel),
+    [messages, attachmentOnlyLabel, noAnswerLabel]
+  )
+  const turnByMessage = useMemo(() => {
+    const indices = new Map<string, number>()
+    for (const turn of timelineTurns) {
+      indices.set(turn.userMessageId, turn.index)
+      if (turn.replyMessageId) {
+        indices.set(turn.replyMessageId, turn.index)
+      }
+    }
+    return indices
+  }, [timelineTurns])
+  const turnCountRef = useRef(0)
+  turnCountRef.current = timelineTurns.length
+  const activeJump = useMemo(
+    () =>
+      targetScroll?.sessionId === session.id
+        ? { messageId: targetScroll.messageId, nonce: targetScroll.nonce, fromSearch: true }
+        : localJump
+          ? { messageId: localJump.messageId, nonce: localJump.nonce, fromSearch: false }
+          : null,
+    [session.id, targetScroll, localJump]
+  )
+
   const [previousVersions, setPreviousVersions] = useState(() =>
     buildMessageVersions(session, new Map())
   )
@@ -81,6 +131,17 @@ export const MessageList = ({
   if (versions !== previousVersions) {
     setPreviousVersions(versions)
   }
+
+  // 搜索跳转或时间线跳转指向更早的消息时自动扩充渲染窗口，保证目标节点在 DOM 中可见。
+  const targetIndex = activeJump ? messages.findIndex((m) => m.id === activeJump.messageId) : -1
+  const requiredForTarget = targetIndex >= 0 ? messages.length - targetIndex + 6 : 0
+  const effectiveVisibleCount = Math.max(visibleCount, requiredForTarget)
+  const startIndex = Math.max(0, messages.length - effectiveVisibleCount)
+  const renderedMessages = useMemo(
+    () => (startIndex > 0 ? messages.slice(startIndex) : messages),
+    [messages, startIndex]
+  )
+
   const lastMessageId = messages.at(-1)?.id
 
   const cancelAnswerTransition = useCallback(() => {
@@ -121,6 +182,7 @@ export const MessageList = ({
       if (Math.abs(top - previousTop) <= 1) {
         return
       }
+      timelineJumpRef.current = false
       const nearBottom = maxTop - top < STICKY_THRESHOLD
       if (nearBottom && top > previousTop && !answerStartRef.current) {
         setScrollMode('bottom')
@@ -198,10 +260,31 @@ export const MessageList = ({
     [trackScroll]
   )
 
+  useLayoutEffect(() => {
+    const pending = prependScrollRef.current
+    const scroll = scrollRef.current
+    if (!pending || !scroll) {
+      return
+    }
+    prependScrollRef.current = null
+    const previousMessage = findMessageElement(scroll, pending.messageId)
+    if (previousMessage) {
+      scroll.scrollTop += previousMessage.getBoundingClientRect().top - pending.top
+      scrollTopRef.current = scroll.scrollTop
+    }
+  }, [startIndex])
+
+  // 切换会话时重置搜索跳转标记，避免旧会话状态影响新会话吸底。
+  useLayoutEffect(() => {
+    setLocalJump(null)
+    setActiveTurnIndex(Math.max(0, turnCountRef.current - 1))
+  }, [session.id])
+
   // 切换版本后将选择器留在原位置，避免回答长短变化导致操作区跳出视口。
   useLayoutEffect(() => {
     const anchor = restoreScrollRef.current
     const scroll = scrollRef.current
+    timelineJumpRef.current = false
     setAnswerSpace(0)
     if (anchor && scroll) {
       const switcher = scroll.querySelector<HTMLElement>(
@@ -217,17 +300,18 @@ export const MessageList = ({
     setScrollMode('bottom')
   }, [session.id, lastMessageId, setAnswerSpace, setScrollMode])
 
-  useEffect(() => {
-    if (!targetScroll || targetScroll.sessionId !== session.id) {
+  useLayoutEffect(() => {
+    if (!activeJump) {
       return
     }
     const scroll = scrollRef.current
     if (!scroll) {
       return
     }
-    const targetEl = scroll.querySelector<HTMLElement>(
-      `[data-message-id="${CSS.escape(targetScroll.messageId)}"]`
-    )
+    if (windowState.sessionId !== session.id || windowState.count < effectiveVisibleCount) {
+      setWindowState({ sessionId: session.id, count: effectiveVisibleCount })
+    }
+    const targetEl = findMessageElement(scroll, activeJump.messageId)
     if (!targetEl) {
       return
     }
@@ -237,16 +321,40 @@ export const MessageList = ({
     const nextTop =
       scroll.scrollTop +
       (targetRect.top - scrollRect.top) -
-      Math.max(24, (scroll.clientHeight - targetRect.height) * 0.32)
+      Math.max(24, (scroll.clientHeight - targetRect.height) * JUMP_VIEWPORT_RATIO)
     scroll.scrollTop = Math.max(0, nextTop)
     scrollTopRef.current = scroll.scrollTop
-    setHighlightedId(targetScroll.messageId)
-    clearSearchScrollTarget(targetScroll.nonce)
+    setHighlightedId(activeJump.messageId)
+    const turnIndex = turnByMessage.get(activeJump.messageId)
+    if (turnIndex !== undefined) {
+      // 靠近会话两端时滚动可能被截在边界，保留显式选择的轮次直到用户继续滚动。
+      timelineJumpRef.current = true
+      setActiveTurnIndex(turnIndex)
+    }
+    if (activeJump.fromSearch) {
+      clearSearchScrollTarget(activeJump.nonce)
+    } else {
+      setLocalJump(null)
+    }
+  }, [
+    session.id,
+    renderedMessages,
+    activeJump,
+    windowState,
+    effectiveVisibleCount,
+    turnByMessage,
+    setScrollMode,
+  ])
+
+  useEffect(() => {
+    if (!highlightedId) {
+      return
+    }
     const timer = window.setTimeout(() => {
-      setHighlightedId((current) => (current === targetScroll.messageId ? null : current))
+      setHighlightedId(null)
     }, 1800)
     return () => window.clearTimeout(timer)
-  }, [session.id, messages, targetScroll, setScrollMode])
+  }, [highlightedId])
 
   useEffect(closeSearchPanel, [session.id, lastMessageId])
 
@@ -269,6 +377,55 @@ export const MessageList = ({
     }
   }, [setScrollMode])
 
+  const loadEarlier = () => {
+    const scroll = scrollRef.current
+    const messageId = renderedMessages[0]?.id
+    if (scroll && messageId) {
+      const firstMessage = findMessageElement(scroll, messageId)
+      if (firstMessage) {
+        prependScrollRef.current = { messageId, top: firstMessage.getBoundingClientRect().top }
+      }
+    }
+    timelineJumpRef.current = false
+    setScrollMode('manual')
+    setWindowState({
+      sessionId: session.id,
+      count: effectiveVisibleCount + LOAD_MORE_STEP,
+    })
+  }
+
+  const jumpToMessage = useCallback((messageId: string) => {
+    jumpNonceRef.current += 1
+    setLocalJump({ messageId, nonce: jumpNonceRef.current })
+  }, [])
+
+  useEffect(() => {
+    if (timelineTurns.length < 2) {
+      return
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) {
+        return
+      }
+      if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') {
+        return
+      }
+      if (document.querySelector('[role="dialog"], [role="menu"], [role="listbox"]')) {
+        return
+      }
+      event.preventDefault()
+      const delta = event.key === 'ArrowUp' ? -1 : 1
+      const nextIndex = Math.max(0, Math.min(timelineTurns.length - 1, activeTurnIndex + delta))
+      const nextTurn = timelineTurns[nextIndex]
+      if (nextTurn) {
+        setActiveTurnIndex(nextIndex)
+        jumpToMessage(nextTurn.userMessageId)
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [timelineTurns, activeTurnIndex, jumpToMessage])
+
   // 内容、键盘和视口变化时同步位置，跨移动端断点时切换滚动层。
   useLayoutEffect(() => {
     const scroll = scrollRef.current
@@ -281,11 +438,36 @@ export const MessageList = ({
       scroll.scrollTop = scrollTopRef.current
     }
     scrollTopRef.current = scroll.scrollTop
+    let timelineFrame: number | null = null
+    const syncTimeline = () => {
+      timelineFrame = null
+      if (timelineJumpRef.current) {
+        return
+      }
+      const probe =
+        scroll.getBoundingClientRect().top + Math.max(24, scroll.clientHeight * JUMP_VIEWPORT_RATIO)
+      let turnIndex: number | undefined
+      for (const message of content.querySelectorAll<HTMLElement>('[data-turn-index]')) {
+        if (message.getBoundingClientRect().top > probe && turnIndex !== undefined) {
+          break
+        }
+        turnIndex = Number(message.dataset.turnIndex)
+      }
+      if (turnIndex !== undefined) {
+        setActiveTurnIndex(turnIndex)
+      }
+    }
+    const scheduleTimeline = () => {
+      if (!timelineJumpRef.current && turnCountRef.current >= 2 && timelineFrame === null) {
+        timelineFrame = requestAnimationFrame(syncTimeline)
+      }
+    }
     const onScroll = () => {
       trackScroll(scroll)
       if (scrollModeRef.current === 'manual' && answerSpaceRef.current > 0) {
         syncScroll()
       }
+      scheduleTimeline()
     }
     const onWheel = (event: WheelEvent) => {
       if (Math.abs(event.deltaY) > Math.abs(event.deltaX)) {
@@ -295,7 +477,10 @@ export const MessageList = ({
     scroll.addEventListener('scroll', onScroll, { passive: true })
     scroll.addEventListener('touchmove', releaseAnswerAnchor, { passive: true })
     scroll.addEventListener('wheel', onWheel, { passive: true })
-    const observer = new ResizeObserver(syncScroll)
+    const observer = new ResizeObserver(() => {
+      syncScroll()
+      scheduleTimeline()
+    })
     observer.observe(content)
     observer.observe(scroll)
     if (!isMobile && footerRef.current) {
@@ -303,6 +488,9 @@ export const MessageList = ({
     }
     return () => {
       cancelAnswerTransition()
+      if (timelineFrame !== null) {
+        cancelAnimationFrame(timelineFrame)
+      }
       observer.disconnect()
       scroll.removeEventListener('scroll', onScroll)
       scroll.removeEventListener('touchmove', releaseAnswerAnchor)
@@ -331,7 +519,7 @@ export const MessageList = ({
     if (!scroll) {
       return
     }
-    if (targetScroll?.sessionId === session.id) {
+    if (activeJump) {
       setScrollMode('manual')
       return
     }
@@ -366,54 +554,72 @@ export const MessageList = ({
     session,
     lastMessageId,
     streaming,
-    targetScroll,
+    activeJump,
     setAnswerSpace,
     setScrollMode,
     startAnswerTransition,
     syncScroll,
   ])
 
-  const lastIndex = messages.length - 1
+  const lastIndex = renderedMessages.length - 1
   const uploadRetryId = getUploadRetryId(messages, streaming)
   return (
-    <div ref={isMobile ? undefined : scrollRef} className={styles.container}>
-      <div ref={isMobile ? scrollRef : undefined} className={styles.scroll}>
-        <div ref={contentRef} className={styles.column}>
-          {messages.map((message, index) => (
-            <div
-              key={message.id}
-              data-message-id={message.id}
-              className={clsx(highlightedId === message.id && styles.searchHighlight)}
-            >
-              {message.role === 'user' ? (
-                <UserMessage
-                  sessionId={session.id}
-                  message={message}
-                  retryUploadId={uploadRetryId}
-                  isFirst={index === 0}
-                  isLast={index === lastIndex || index === lastIndex - 1}
-                  busy={streaming}
-                  versions={versions.get(message.id) ?? EMPTY_VERSIONS}
-                  onSelectVersion={selectVersion}
-                />
-              ) : (
-                <AssistantMessage
-                  sessionId={session.id}
-                  message={message}
-                  isLast={index === lastIndex}
-                  streaming={streaming && index === lastIndex}
-                  busy={streaming}
-                  versions={versions.get(message.id) ?? EMPTY_VERSIONS}
-                  onSelectVersion={selectVersion}
-                  answerStartRef={index === lastIndex ? answerStartRef : undefined}
-                  onToggleThinking={index === lastIndex ? releaseAnswerAnchor : undefined}
-                />
-              )}
-            </div>
-          ))}
+    <div className={styles.host}>
+      <div ref={isMobile ? undefined : scrollRef} className={styles.container}>
+        <div ref={isMobile ? scrollRef : undefined} className={styles.scroll}>
+          <div ref={contentRef} className={styles.column}>
+            {startIndex > 0 ? (
+              <div className={styles.loadEarlierRow}>
+                <button type="button" className={styles.loadEarlierBtn} onClick={loadEarlier}>
+                  {t('loadEarlierMessages', { count: startIndex })}
+                </button>
+              </div>
+            ) : null}
+            {renderedMessages.map((message, index) => (
+              <div
+                key={message.id}
+                data-message-id={message.id}
+                data-turn-index={turnByMessage.get(message.id)}
+                className={clsx(highlightedId === message.id && styles.searchHighlight)}
+              >
+                {message.role === 'user' ? (
+                  <UserMessage
+                    sessionId={session.id}
+                    message={message}
+                    retryUploadId={uploadRetryId}
+                    isFirst={startIndex + index === 0}
+                    isLast={index === lastIndex || index === lastIndex - 1}
+                    busy={streaming}
+                    versions={versions.get(message.id) ?? EMPTY_VERSIONS}
+                    onSelectVersion={selectVersion}
+                  />
+                ) : (
+                  <AssistantMessage
+                    sessionId={session.id}
+                    message={message}
+                    isLast={index === lastIndex}
+                    streaming={streaming && index === lastIndex}
+                    answerStartRef={index === lastIndex ? answerStartRef : undefined}
+                    onToggleThinking={index === lastIndex ? releaseAnswerAnchor : undefined}
+                    busy={streaming}
+                    versions={versions.get(message.id) ?? EMPTY_VERSIONS}
+                    onSelectVersion={selectVersion}
+                  />
+                )}
+              </div>
+            ))}
+          </div>
         </div>
+        {footer}
       </div>
-      {footer}
+      <ConversationTimeline
+        sessionId={session.id}
+        title={session.title}
+        turns={timelineTurns}
+        activeTurnIndex={activeTurnIndex}
+        isMobile={isMobile}
+        onJumpToTurn={jumpToMessage}
+      />
     </div>
   )
 }

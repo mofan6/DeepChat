@@ -136,7 +136,7 @@ export const formatSavedMemories = (): string => {
     return ''
   }
   const header =
-    '以下是关于用户的长期记忆（已保存的个人事实、偏好与要求，请在回答时自然遵循和结合）：'
+    '【静默背景档案（系统已知的长期用户信息，非用户本轮新指令）：仅在回答当前问题确实直接需要时才自然参考；与当前话题无关时严禁顺嘴提起、复述或点出“记忆/注入”字样。】'
   const lines: string[] = [header]
   let total = header.length
   for (const item of enabled) {
@@ -291,7 +291,11 @@ export const extractMemoriesFromTurn = async ({
           changedText = op.content
         }
       } else if (op.action === 'delete') {
+        const beforeCount = useSavedMemories.getState().items.length
         deleteSavedMemory(op.id)
+        if (!changedText && useSavedMemories.getState().items.length < beforeCount) {
+          changedText = op.id
+        }
       }
     }
     if (changedText) {

@@ -10,7 +10,7 @@ import {
   streamResponsesMessage,
 } from '../api/openai.js'
 import { getApiOrigin } from '../api/origin.js'
-import type { ChatModel, CreateMessageRequest } from '../api/types.js'
+import type { ChatModel, CreateMessageRequest, MessageUsage } from '../api/types.js'
 import {
   extractFileIds,
   getFileErrorCode,
@@ -677,7 +677,7 @@ const submitPrompt = (
     sessionId = session.id
     touchSession(session.id)
     set((state) => ({
-      sessions: [toSessionSummary(session), ...state.sessions],
+      sessions: sortSessions([toSessionSummary(session), ...state.sessions]),
       sessionCache: { ...state.sessionCache, [session.id]: session },
       activeId: session.id,
     }))
@@ -933,7 +933,7 @@ export const forkSessionFromMessage = (sessionId: string, messageId: string): st
   }
   touchSession(nextSession.id)
   set((state) => ({
-    sessions: [toSessionSummary(nextSession), ...state.sessions],
+    sessions: sortSessions([toSessionSummary(nextSession), ...state.sessions]),
     sessionCache: { ...state.sessionCache, [nextSession.id]: nextSession },
     activeId: nextSession.id,
   }))
@@ -1370,6 +1370,38 @@ const prepareInlineAttachments = async (
 }
 
 const IMAGE_GEN_TAG_RE = /<generate_image>([\s\S]*?)<\/generate_image>/i
+const IMAGE_GEN_TAG_RE_G = /<generate_image>[\s\S]*?<\/generate_image>/gi
+
+/** 使 sourceEntries 下标与 openai / responses 协议实际发送的 messages 数组精确对齐 */
+const alignSourceEntriesForProtocol = (
+  messages: CreateMessageRequest['messages'],
+  sourceEntries: RequestMessageSource[],
+  system: string,
+  protocol: string
+): RequestMessageSource[] => {
+  if (protocol === 'deepseek') {
+    return sourceEntries
+  }
+  const mapped: RequestMessageSource[] = []
+  if (protocol !== 'responses' && system.trim()) {
+    mapped.push({ kind: 'reminder' })
+  }
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i]
+    const entry = sourceEntries[i]
+    if (msg.role === 'latest_reminder') {
+      continue
+    }
+    if (msg.role === 'assistant') {
+      const hasText = msg.content.some((block) => block.type === 'text' && block.text)
+      if (!hasText) {
+        continue
+      }
+    }
+    mapped.push(entry)
+  }
+  return mapped
+}
 
 const readImageDimensions = async (
   blob: Blob
@@ -1489,6 +1521,10 @@ const saveAndCreateImageBlock = async (
     referenceImages,
     signal,
   })
+  signal.throwIfAborted()
+  if (sessionId && (deletingSessions.has(sessionId) || !getSession(sessionId))) {
+    throw new DOMException('Aborted', 'AbortError')
+  }
   const fileId = createId()
   await db.saveFiles([{ id: fileId, blob: generated.blob }])
   return {
@@ -1736,6 +1772,7 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
   }
   set((state) => ({ streaming: { ...state.streaming, [sessionId]: controller } }))
   let reply = initial
+  let turnUsage: MessageUsage | undefined
   let frame = 0
   const flush = () => {
     cancelAnimationFrame(frame)
@@ -1750,8 +1787,9 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
     const stripReadLinkAssistantIds = new Set<string>()
     let dropLeadingRounds = 0
     let healAttempts = 0
+    let fileRetryAttempt = 0
 
-    for (let attempt = 0; ; attempt += 1) {
+    for (;;) {
       /** 附件补齐前出错属于上传失败，请求还没有发出 */
       let preparing = true
       let receivedContent = false
@@ -1798,32 +1836,37 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
         const imageGenHint = canModelGenerateImage
           ? '你已接入生图模型，具备直接为用户生成图片与图生图（基于用户上传的参考图片修改或重绘）的能力。当用户要求画画、生成图片、设计配图、修改图片或图生图时，绝对不要说“我无法生成图片”，而是在回复末尾输出一行标记：<generate_image>详细的英文或中文绘画/改图提示词</generate_image>。客户端会自动提取该提示词（若有本轮上传图片也会一并作为参考图）调用生图模型展示给用户。如果用户只是普通聊天或询问图片内容而非要求画图/改图，不要输出该标记。'
           : ''
-        const savedMemoryContext = settings.savedMemoryEnabled ? formatSavedMemories() : ''
-        const memoryContext = settings.crossChatMemory
-          ? await buildCrossChatMemory({
-              currentSessionId: sessionId,
-              query: inlinePrepared.question.content,
-              sessions: get().sessions,
-              sessionCache: get().sessionCache,
-              maxSessions: settings.crossChatMemoryLimit,
-              allowRefused: settings.allowRefusedContext,
-              scope: settings.crossChatMemoryScope,
-              selectedSessionIds: settings.crossChatMemorySessionIds,
-              signal: controller.signal,
-            })
-          : ''
+        // 续写不重新注入动态变化的长期记忆/跨对话记忆，保持本轮上下文稳定与前缀缓存命中。
+        const savedMemoryContext =
+          !prepared.prefix && settings.savedMemoryEnabled ? formatSavedMemories() : ''
+        const memoryContext =
+          !prepared.prefix && settings.crossChatMemory
+            ? await buildCrossChatMemory({
+                currentSessionId: sessionId,
+                query: inlinePrepared.question.content,
+                sessions: get().sessions,
+                sessionCache: get().sessionCache,
+                maxSessions: settings.crossChatMemoryLimit,
+                allowRefused: settings.allowRefusedContext,
+                scope: settings.crossChatMemoryScope,
+                selectedSessionIds: settings.crossChatMemorySessionIds,
+                signal: controller.signal,
+              })
+            : ''
         if (controller.signal.aborted) {
           reply = settleReply(reply, 'stopped', Date.now(), undefined, settings.keepRefusedContent)
           break
         }
-        // 缓存铁律：system 和已保存的历史轮次必须逐字节稳定。
-        // system 位于请求最前面，只要它变化一个字符，服务端前缀 KV 缓存（prompt cache）
-        // 就会从第一个 token 起全部失效，整段历史都要按未命中价重算。
-        // 因此所有会话内动态/模式化上下文（语音通话指令、实时画面提示、长期记忆、跨对话检索）一律前置到本轮用户消息，
-        // 哪怕在同一长对话中从打字切到语音通话，也只影响「最后一条消息」，system 与历史全部命中缓存。
-        const turnContext = [
+        // 缓存铁律：system 和已保存的历史轮次必须逐字节稳定，绝不因记忆变更导致整段前缀缓存失效归零。
+        // 语音模式指令前置；长期记忆与跨对话召回以“尾注背景档案”附在本轮用户提问之后，
+        // 既避免模型把长期记忆误判为“本轮用户刚下发的新任务”，又保证 system 与全部历史轮次 100% 命中前缀缓存。
+        const turnDirectives = [
           voiceSystem ? `<voice_call_mode>\n${voiceSystem}\n</voice_call_mode>` : '',
           visionHint ? `<live_vision_hint>\n${visionHint}\n</live_vision_hint>` : '',
+        ]
+          .filter(Boolean)
+          .join('\n\n')
+        const turnNotes = [
           savedMemoryContext
             ? `<long_term_memory>\n${savedMemoryContext}\n</long_term_memory>`
             : '',
@@ -1831,14 +1874,16 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
         ]
           .filter(Boolean)
           .join('\n\n')
-        const outboundQuestion = turnContext
-          ? {
-              ...inlinePrepared.question,
-              content: inlinePrepared.question.content
-                ? `${turnContext}\n\n${inlinePrepared.question.content}`
-                : turnContext,
-            }
-          : inlinePrepared.question
+        const combinedContent = [turnDirectives, inlinePrepared.question.content, turnNotes]
+          .filter(Boolean)
+          .join('\n\n')
+        const outboundQuestion =
+          turnDirectives || turnNotes
+            ? {
+                ...inlinePrepared.question,
+                content: combinedContent,
+              }
+            : inlinePrepared.question
         const builtRequest = toRequestMessagesWithSources(
           prepared.history,
           outboundQuestion,
@@ -1855,9 +1900,14 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
           }
         )
         const messages = builtRequest.messages
-        builtSourceEntries = builtRequest.sourceEntries
-        builtRoundCount = builtRequest.roundCount
         const system = [baseSystem, imageGenHint].filter(Boolean).join('\n\n')
+        builtSourceEntries = alignSourceEntriesForProtocol(
+          messages,
+          builtRequest.sourceEntries,
+          system,
+          settings.chatProtocol
+        )
+        builtRoundCount = builtRequest.roundCount
         const tools = serverTools(initial.search ?? false, settings.readUrl)
         const requestBody: CreateMessageRequest = {
           model: initial.model ?? (settings.model.trim() || MODEL),
@@ -1900,6 +1950,11 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
         const blockIndexes = new Map<number, number>()
         for await (const event of events) {
           receivedContent ||= event.type === 'content_block_start'
+          if (event.type === 'message_start' && event.message.usage) {
+            turnUsage = event.message.usage
+          } else if (event.type === 'message_delta' && event.usage) {
+            turnUsage = event.usage
+          }
           if (
             event.type === 'message_delta' &&
             (event.delta.stop_reason === 'end_turn' || event.delta.stop_reason === 'max_tokens') &&
@@ -1933,7 +1988,13 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
               ...reply,
               blocks: reply.blocks.map((block) =>
                 block.type === 'text'
-                  ? { ...block, text: block.text.replace(IMAGE_GEN_TAG_RE, '').trim() }
+                  ? {
+                      ...block,
+                      text: block.text
+                        .replace(IMAGE_GEN_TAG_RE_G, '')
+                        .replace(/<\/?generate_image>/gi, '')
+                        .trim(),
+                    }
                   : block
               ),
             }
@@ -2038,11 +2099,12 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
         }
         // 附件失效：重新补传后重发。收到过内容块（含丢弃的客户端工具）后不自动重发。
         if (
-          attempt < FILE_RETRY_LIMIT &&
+          fileRetryAttempt < FILE_RETRY_LIMIT &&
           !receivedContent &&
           reuploadInvalidatedFiles(sessionId, request, error)
         ) {
-          await waitForRetry(attempt, controller.signal)
+          await waitForRetry(fileRetryAttempt, controller.signal)
+          fileRetryAttempt += 1
           if (controller.signal.aborted) {
             reply = settleReply(reply, 'stopped', Date.now(), undefined, keepRefusedContent)
             break
@@ -2147,8 +2209,8 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
     titleRequests.delete(controller)
     streamFlushes.delete(sessionId)
     cancelAnimationFrame(frame)
-    if (reply.usage) {
-      recordTurnTokenUsage(reply.usage)
+    if (turnUsage) {
+      recordTurnTokenUsage(turnUsage)
     }
     updateReply(sessionId, reply)
     set((state) => ({
